@@ -214,12 +214,8 @@ const PortalStageApproval = ({ site, clientName }) => {
                   }`}
                 >
                   {stage.boq.withinTolerance
-                    ? `✓ ${stage.boq.variancePct >= 0 ? "+" : ""}${stage.boq.variancePct.toFixed(
-                        1,
-                      )}% vs estimate — within the agreed ±${stage.boq.tolerancePct}% band`
-                    : `${stage.boq.variancePct >= 0 ? "+" : ""}${stage.boq.variancePct.toFixed(
-                        1,
-                      )}% vs estimate — beyond ±${stage.boq.tolerancePct}%, needs your approval`}
+                    ? `✓ ${stage.boq.variance > 0 ? "+" : stage.boq.variance < 0 ? "−" : ""}₹${Math.abs(Math.round(stage.boq.variance)).toLocaleString("en-IN")} vs estimate — increase is within ₹${stage.boq.toleranceAmount.toLocaleString("en-IN")}`
+                    : `+₹${Math.round(stage.boq.variance).toLocaleString("en-IN")} vs estimate — beyond proposal + ₹${stage.boq.toleranceAmount.toLocaleString("en-IN")}, needs your approval`}
                 </p>
               )}
             </div>

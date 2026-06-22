@@ -1,14 +1,16 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { FileBox, Package, Truck, Users, ShoppingCart } from "lucide-react";
+import { FileBox, Package, Truck, Users, ShoppingCart, Send } from "lucide-react";
 import Takeoff from "./tabs/Takeoff";
+import RFQs from "./tabs/RFQs";
 import PurchaseOrders from "./tabs/PurchaseOrders";
 import GRN from "./tabs/GRN";
 import Vendors from "./tabs/Vendors";
 
 // Procurement — the material supply chain for won projects. Take-off rolls a
-// BOQ's materials into a requisition → Purchase Orders → goods receipt (GRN).
-// Vendors are the supplier master, managed here in their own tab.
+// BOQ's materials into a requisition → RFQ (invite vendors to quote) →
+// Purchase Orders → goods receipt (GRN). Vendors are the supplier master,
+// managed here in their own tab.
 const TABS = [
   {
     id: "takeoff",
@@ -16,6 +18,13 @@ const TABS = [
     icon: FileBox,
     description: "Roll a BOQ's materials into a requisition",
     component: Takeoff,
+  },
+  {
+    id: "rfqs",
+    label: "RFQs",
+    icon: Send,
+    description: "Invite vendors to quote a take-off before committing a PO",
+    component: RFQs,
   },
   {
     id: "purchase-orders",

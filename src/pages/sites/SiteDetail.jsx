@@ -18,13 +18,9 @@ import {
 import { FaWhatsapp } from "react-icons/fa6";
 
 import { Loader2 } from "lucide-react";
-import {
-  getSite,
-  saveSite,
-} from "../../data/siteStorage";
+import { getSite } from "../../data/siteStorage";
 import { resolveSiteFileUrls } from "../../data/fileStorage";
 import ClientAvatar from "../../assets/images/Client_avatar.png";
-import DesignWorkspace from "./components/DesignWorkspace";
 import DesignPipeline from "./components/DesignPipeline";
 import SurveyMeasurements from "./components/SurveyMeasurements";
 import Feasibility from "./components/Feasibility";
@@ -74,12 +70,6 @@ const SiteDetail = () => {
 
   const handleExpandSurveyPhoto = (images, initialIdx, title) => {
     setLightboxImg({ images, currentIndex: initialIdx, title });
-  };
-
-  const handleDesignWorkspaceSave = async (updatedSite) => {
-    saveSite(updatedSite);
-    const resolved = await resolveSiteFileUrls(updatedSite);
-    setSite(resolved);
   };
 
   if (loading) {
@@ -137,88 +127,9 @@ const SiteDetail = () => {
     );
   }
 
-  if (isDesignPhase) {
-    return (
-      <div className="bg-overallbg p-6 font-sans h-full flex flex-col overflow-y-auto lg:overflow-hidden scroll-hidden-bar">
-        <DesignWorkspace
-          site={site}
-          onSave={handleDesignWorkspaceSave}
-          onExpandPhoto={handleExpandSurveyPhoto}
-          navigate={navigate}
-        />
-        {/* Lightbox / Zoom View */}
-        {lightboxImg && (
-          <div
-            className="fixed inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-4 transition-all select-none"
-            onClick={() => setLightboxImg(null)}
-          >
-            {/* Close button */}
-            <button
-              onClick={() => setLightboxImg(null)}
-              className="absolute top-6 right-6 text-white/75 hover:text-white text-xs bg-white/10 px-4 py-2 rounded-full cursor-pointer hover:bg-white/20 transition-all font-semibold uppercase tracking-wider z-[210]"
-            >
-              ✕ Close View
-            </button>
-
-            {/* Left Arrow */}
-            {lightboxImg.images?.length > 1 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setLightboxImg((prev) => ({
-                    ...prev,
-                    currentIndex:
-                      prev.currentIndex === 0
-                        ? prev.images.length - 1
-                        : prev.currentIndex - 1,
-                  }));
-                }}
-                className="absolute left-6 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-3 transition-all cursor-pointer z-[210]"
-              >
-                <FiChevronLeft size={24} />
-              </button>
-            )}
-
-            {/* Active Image */}
-            <img
-              src={lightboxImg.images[lightboxImg.currentIndex]}
-              alt={`${lightboxImg.title} view`}
-              className="max-w-[95vw] max-h-[85vh] object-contain rounded-lg shadow-2xl transition-transform duration-300"
-              onClick={(e) => e.stopPropagation()}
-            />
-
-            {/* Right Arrow */}
-            {lightboxImg.images?.length > 1 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setLightboxImg((prev) => ({
-                    ...prev,
-                    currentIndex:
-                      prev.currentIndex === prev.images.length - 1
-                        ? 0
-                        : prev.currentIndex + 1,
-                  }));
-                }}
-                className="absolute right-6 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-3 transition-all cursor-pointer z-[210]"
-              >
-                <FiChevronRight size={24} />
-              </button>
-            )}
-
-            {/* Title & Caption */}
-            <h3 className="text-white font-bold text-base mt-6 tracking-wide">
-              {lightboxImg.title} (View {lightboxImg.currentIndex + 1} of{" "}
-              {lightboxImg.images.length})
-            </h3>
-            <p className="text-white/60 text-[10px] uppercase tracking-wider mt-1.5">
-              Workspace Design Attachment
-            </p>
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Status says Design but there's no frozen survey behind it (stale/legacy
+  // data) — guide back to Survey rather than showing a broken design view.
+  const designMissingBasis = isDesignPhase && !designFlow;
 
   return (
     <div className="bg-overallbg p-6 font-sans h-full flex flex-col overflow-y-auto lg:overflow-hidden scroll-hidden-bar">
@@ -436,11 +347,19 @@ const SiteDetail = () => {
         </div>
         </div>
 
+        {designMissingBasis && (
+          <div className="bg-amber-50 border border-amber-200 rounded-[16px] p-4 text-[12.5px] text-amber-800">
+            This site is marked <strong>Design</strong> but hasn&apos;t been through the
+            survey freeze yet, so there&apos;s no design pipeline to show. Complete the
+            survey below and click "Move to Design" to start it properly.
+          </div>
+        )}
+
         {/* Front-end — Architecture does Feasibility; Interiors does Survey */}
         {getSiteServiceTrack(site) === "Architecture" ? (
           <Feasibility site={site} />
         ) : (
-          <SurveyMeasurements site={site} />
+          <SurveyMeasurements site={site} onExpandPhoto={handleExpandSurveyPhoto} />
         )}
 
       </div>

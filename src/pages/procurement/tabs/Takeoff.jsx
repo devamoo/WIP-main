@@ -1,20 +1,52 @@
 import { useState, useMemo } from "react";
-import { FileBox, ArrowRight } from "lucide-react";
+import { FileBox, ArrowRight, Send } from "lucide-react";
 import { listBoqs, getBoq } from "../../../data/boqStorage";
 import { buildTakeoffFromBoq } from "../../../data/procurementStorage";
 import { getContractByClient } from "../../../data/contractStorage";
 import PoFormModal from "../PoFormModal";
+import RfqFormModal from "../RfqFormModal";
 
 // Material take-off: pick a BOQ, roll up every material it references into a
-// deduped requisition, then push it straight into a draft Purchase Order.
+// deduped requisition. This is the Purchase Requisition step — staff check off
+// which specific materials they actually want to source right now (not every
+// material has to move at once), then push only those into an RFQ or PO.
+
+const takeoffKey = (t) => `${t.materialId || ""}|${t.name}|${t.spec || ""}`;
 
 const Takeoff = () => {
   const boqs = listBoqs();
   const [boqId, setBoqId] = useState(boqs[0]?.id || "");
   const [modal, setModal] = useState(false);
+  const [rfqModal, setRfqModal] = useState(false);
+  // Tracked as exclusions rather than inclusions so a freshly loaded take-off
+  // defaults to "everything selected" without needing an effect to seed it —
+  // resetting on BOQ change happens during render (React's recommended
+  // pattern), not via setState-in-effect.
+  const [deselected, setDeselected] = useState(() => new Set());
+  const [seededForBoq, setSeededForBoq] = useState(boqId);
 
   const boq = useMemo(() => (boqId ? getBoq(boqId) : null), [boqId]);
   const takeoff = useMemo(() => (boq ? buildTakeoffFromBoq(boq) : []), [boq]);
+
+  if (boqId !== seededForBoq) {
+    setSeededForBoq(boqId);
+    setDeselected(new Set());
+  }
+
+  const toggleOne = (t) =>
+    setDeselected((prev) => {
+      const next = new Set(prev);
+      const k = takeoffKey(t);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+
+  const allSelected = takeoff.length > 0 && deselected.size === 0;
+  const toggleAll = () =>
+    setDeselected(allSelected ? new Set(takeoff.map(takeoffKey)) : new Set());
+
+  const selectedTakeoff = takeoff.filter((t) => !deselected.has(takeoffKey(t)));
 
   // If the BOQ's client has a contract, pre-select it on the PO.
   const contractId = useMemo(() => {
@@ -22,12 +54,20 @@ const Takeoff = () => {
     return cid ? getContractByClient(cid)?.id || "" : "";
   }, [boq]);
 
-  const poLines = takeoff.map((t) => ({
+  const poLines = selectedTakeoff.map((t) => ({
     name: t.name,
     spec: t.spec,
     qty: Math.round(t.estimatedQty) || 1,
     unit: t.unit,
     rate: 0,
+    materialId: t.materialId,
+  }));
+
+  const rfqLines = selectedTakeoff.map((t) => ({
+    name: t.name,
+    spec: t.spec,
+    qty: Math.round(t.estimatedQty) || 1,
+    unit: t.unit,
     materialId: t.materialId,
   }));
 
@@ -50,12 +90,25 @@ const Takeoff = () => {
           </select>
         </label>
         {takeoff.length > 0 && (
-          <button
-            onClick={() => setModal(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-blue-950"
-          >
-            Create PO from take-off <ArrowRight size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-text-muted">
+              {selectedTakeoff.length} of {takeoff.length} selected
+            </span>
+            <button
+              disabled={selectedTakeoff.length === 0}
+              onClick={() => setRfqModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-select-blue text-select-blue text-[12px] font-semibold hover:bg-select-blue/5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Send RFQ <Send size={13} />
+            </button>
+            <button
+              disabled={selectedTakeoff.length === 0}
+              onClick={() => setModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-blue-950 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Create PO from selection <ArrowRight size={14} />
+            </button>
+          </div>
         )}
       </div>
 
@@ -73,6 +126,15 @@ const Takeoff = () => {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="bg-bg-soft text-text-muted text-[11px] uppercase tracking-wider">
+                <th className="px-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    className="h-3.5 w-3.5"
+                    title="Select all"
+                  />
+                </th>
                 <th className="text-left font-bold px-4 py-3">Material</th>
                 <th className="text-left font-bold px-4 py-3">Spec</th>
                 <th className="text-right font-bold px-4 py-3">Est. Qty</th>
@@ -81,21 +143,36 @@ const Takeoff = () => {
               </tr>
             </thead>
             <tbody>
-              {takeoff.map((t, i) => (
-                <tr key={i} className="border-t border-bordergray hover:bg-bg-soft/40">
-                  <td className="px-4 py-3 font-semibold text-textcolor">
-                    {t.name}
-                  </td>
-                  <td className="px-4 py-3 text-text-muted">{t.spec || "—"}</td>
-                  <td className="px-4 py-3 text-right text-textcolor">
-                    {Math.round(t.estimatedQty).toLocaleString("en-IN")}
-                  </td>
-                  <td className="px-4 py-3 text-text-muted">{t.unit}</td>
-                  <td className="px-4 py-3 text-text-muted">
-                    {t.usedIn.join(", ") || "—"}
-                  </td>
-                </tr>
-              ))}
+              {takeoff.map((t, i) => {
+                const checked = !deselected.has(takeoffKey(t));
+                return (
+                  <tr
+                    key={i}
+                    onClick={() => toggleOne(t)}
+                    className={`border-t border-bordergray hover:bg-bg-soft/40 cursor-pointer ${checked ? "" : "opacity-50"}`}
+                  >
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleOne(t)}
+                        className="h-3.5 w-3.5"
+                      />
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-textcolor">
+                      {t.name}
+                    </td>
+                    <td className="px-4 py-3 text-text-muted">{t.spec || "—"}</td>
+                    <td className="px-4 py-3 text-right text-textcolor">
+                      {Math.round(t.estimatedQty).toLocaleString("en-IN")}
+                    </td>
+                    <td className="px-4 py-3 text-text-muted">{t.unit}</td>
+                    <td className="px-4 py-3 text-text-muted">
+                      {t.usedIn.join(", ") || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -105,6 +182,13 @@ const Takeoff = () => {
         open={modal}
         onClose={() => setModal(false)}
         initialLines={poLines}
+        initialContractId={contractId}
+      />
+
+      <RfqFormModal
+        open={rfqModal}
+        onClose={() => setRfqModal(false)}
+        initialLines={rfqLines}
         initialContractId={contractId}
       />
     </div>

@@ -2,18 +2,10 @@ import React, { useState } from "react";
 import { Loader2 } from "lucide-react";
 import Modal from "../../../components/Modal";
 import InputField from "../../../components/InputField";
-import { getPresetKeys } from "../../../data/QuotePresets";
-
-const PROPERTY_TYPES = [
-  "Luxury Villa",
-  "Apartment",
-  "Penthouse",
-  "Independent House",
-  "Duplex",
-  "Studio Apartment",
-  "Farm House",
-  "Beach House",
-];
+import {
+  getPresetKeys,
+  getPropertyTypesForPreset,
+} from "../../../data/QuotePresets";
 
 const toInputDate = (dateStr) => {
   if (!dateStr || typeof dateStr !== "string") return "";
@@ -112,7 +104,11 @@ const AddSiteModal = ({ onClose, onSubmit, isSaving, SUPERVISORS = [] }) => {
             type="select"
             label="Property Preset"
             value={propertyPreset}
-            onChange={(e) => setPropertyPreset(e.target.value)}
+            onChange={(e) => {
+              const preset = e.target.value;
+              setPropertyPreset(preset);
+              setSiteType(getPropertyTypesForPreset(preset)[0] || "");
+            }}
             options={getPresetKeys()}
             placeholder="Select Property Preset"
             required
@@ -123,8 +119,9 @@ const AddSiteModal = ({ onClose, onSubmit, isSaving, SUPERVISORS = [] }) => {
             label="Site Type"
             value={siteType}
             onChange={(e) => setSiteType(e.target.value)}
-            options={PROPERTY_TYPES}
+            options={getPropertyTypesForPreset(propertyPreset)}
             placeholder="Select Property Type"
+            disabled={!propertyPreset}
             required
           />
         </div>

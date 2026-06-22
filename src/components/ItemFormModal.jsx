@@ -93,11 +93,13 @@ const ItemFormModal = ({
   roomCategoryMode = false,
   multiEntryMode = false,
   existingScopeItems = [],
+  lockHeading = false,
 }) => {
   const defaults = {
     ...blankLibraryItem(),
     ...initial,
   };
+  const lockedHeading = initial?.heading || initial?.area || "";
 
   // react-hook-form manages the top-level validated fields
   const {
@@ -448,7 +450,9 @@ const ItemFormModal = ({
         // Only the Proposal scope flow needs a room destination; in the Item
         // Master (category-free) there's no room to ask for, so skip the prompt.
         const heading = roomCategoryMode
-          ? await getDestinationHeading(itemName, libOrLibs.category)
+          ? lockHeading
+            ? lockedHeading
+            : await getDestinationHeading(itemName, libOrLibs.category)
           : "";
 
         const defaultSpec = libOrLibs.spec || getDetailedDescription(itemName) || itemName;
@@ -649,13 +653,16 @@ const ItemFormModal = ({
     if (!validateCustom(validatedData)) return;
     const defaultSpec = getDetailedDescription(roomCategoryMode ? validatedData.itemName : validatedData.description);
     const isDescriptionCustom = roomCategoryMode ? (validatedData.spec !== defaultSpec) : false;
+    const submittedHeading = lockHeading
+      ? lockedHeading.trim().toUpperCase()
+      : validatedData.heading.trim().toUpperCase();
     onSave({
       ...form,
-      heading: roomCategoryMode ? validatedData.heading.trim().toUpperCase() : "",
+      heading: roomCategoryMode ? submittedHeading : "",
       itemName: roomCategoryMode ? validatedData.itemName : validatedData.description,
       description: roomCategoryMode ? validatedData.spec : validatedData.description,
       spec: validatedData.spec || "",
-      area: roomCategoryMode ? validatedData.heading.trim().toUpperCase() : "",
+      area: roomCategoryMode ? submittedHeading : "",
       isDescriptionCustom,
       hsn: validatedData.hsn || "",
       rate: Number(validatedData.rate) || 0,
@@ -833,19 +840,28 @@ const ItemFormModal = ({
               <>
                 <div>
                   <Label>Heading *</Label>
-                  <EditableHeadingDropdown
-                    value={watchedHeading || ""}
-                    category={resolvedHeadingCategory}
-                    onChange={(val) => {
-                      rhfSetValue("heading", val, { shouldValidate: true });
-                    }}
-                    existingScopeItems={[
-                      ...(existingScopeItems || []),
-                      ...drafts,
-                    ]}
-                    error={errors.heading?.message}
-                    placeholder="Select or create a heading…"
-                  />
+                  {lockHeading ? (
+                    <input
+                      value={lockedHeading}
+                      readOnly
+                      className={`${inputBase} bg-bg-soft text-text-muted cursor-not-allowed`}
+                      title="The heading is preserved while editing this scope"
+                    />
+                  ) : (
+                    <EditableHeadingDropdown
+                      value={watchedHeading || ""}
+                      category={resolvedHeadingCategory}
+                      onChange={(val) => {
+                        rhfSetValue("heading", val, { shouldValidate: true });
+                      }}
+                      existingScopeItems={[
+                        ...(existingScopeItems || []),
+                        ...drafts,
+                      ]}
+                      error={errors.heading?.message}
+                      placeholder="Select or create a heading…"
+                    />
+                  )}
                 </div>
                 <div>
                   <Label>Item Name *</Label>

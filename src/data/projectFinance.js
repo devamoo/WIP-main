@@ -23,13 +23,24 @@ const readJson = (key, fallback) => {
   }
 };
 
-// Internal cost the BOQ planned for, ex-GST (afterBoqDiscount). Falls back to
-// revenue de-margined when no BOQ is linked yet.
+// Internal cost the BOQ planned for, ex-GST — materials (afterBoqDiscount)
+// PLUS the BOQ's own planned labour + contingency budget (baseForGst), so
+// this is comparable to actualCost below (material actuals + labour
+// actuals). Falls back to revenue de-margined when no BOQ is linked yet.
 const plannedCostFor = (contract) => {
   const boq = contract.boqId ? getBoq(contract.boqId) : null;
-  if (boq) return computeBoqTotals(boq).afterBoqDiscount;
+  if (boq) return computeBoqTotals(boq).baseForGst;
   const margin = (Number(contract.marginPercent) || 0) / 100;
   return margin > 0 ? contract.contractValue / (1 + margin) : contract.contractValue;
+};
+
+// Planned labour/contingency budget, broken out for display alongside the
+// actuals they're meant to be compared against.
+const plannedLaborAndContingencyFor = (contract) => {
+  const boq = contract.boqId ? getBoq(contract.boqId) : null;
+  if (!boq) return { plannedLabor: 0, plannedContingency: 0 };
+  const t = computeBoqTotals(boq);
+  return { plannedLabor: t.laborAmt, plannedContingency: t.contingencyAmt };
 };
 
 const billingFromMilestones = (contract) => {
@@ -58,6 +69,7 @@ export const computeProjectPL = (clientID) => {
 const plFor = (contract) => {
   const revenue = Number(contract.contractValue) || 0; // base + approved variations
   const plannedCost = plannedCostFor(contract);
+  const { plannedLabor, plannedContingency } = plannedLaborAndContingencyFor(contract);
   const materialActual = getMaterialActuals(contract.id);
   const labourActual = getLabourActuals(contract.id);
   const actualCost = materialActual + labourActual;
@@ -77,6 +89,8 @@ const plFor = (contract) => {
     revenue,
     variationsValue: Number(contract.variationsValue) || 0,
     plannedCost,
+    plannedLabor,
+    plannedContingency,
     materialActual,
     labourActual,
     actualCost,

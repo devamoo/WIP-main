@@ -93,12 +93,21 @@ export const computeBoqTotals = (boq) => {
     bd.type === "percent"
       ? (taxable * (Number(bd.value) || 0)) / 100
       : Number(bd.value) || 0;
-
-  // Re-apportion GST proportional to post-discount taxable. Cleaner than
-  // recomputing per item — keeps the rate breakdown intact while honouring
-  // the overall discount.
   const afterBoqDiscount = Math.max(0, taxable - boqDiscountAmt);
-  const scale = taxable > 0 ? afterBoqDiscount / taxable : 0;
+
+  // Labour and contingency are markups on the discounted taxable base — both
+  // are part of the taxable supply, so GST below covers them too, not just
+  // the material cost.
+  const laborPercent = Number(boq.laborPercent) || 0;
+  const contingencyPercent = Number(boq.contingencyPercent) || 0;
+  const laborAmt = (afterBoqDiscount * laborPercent) / 100;
+  const contingencyAmt = (afterBoqDiscount * contingencyPercent) / 100;
+  const baseForGst = afterBoqDiscount + laborAmt + contingencyAmt;
+
+  // Re-apportion GST proportional to the final taxable base (post-discount,
+  // post-labour, post-contingency). Cleaner than recomputing per item — keeps
+  // the rate breakdown intact while honouring every BOQ-level markup.
+  const scale = taxable > 0 ? baseForGst / taxable : 0;
   const scaledGstByRate = {};
   let totalGst = 0;
   for (const [rate, amt] of Object.entries(gstByRate)) {
@@ -107,13 +116,18 @@ export const computeBoqTotals = (boq) => {
     totalGst += s;
   }
 
-  const grandTotal = afterBoqDiscount + totalGst;
+  const grandTotal = baseForGst + totalGst;
   return {
     subtotal,
     lineDiscounts,
     taxable,
     boqDiscountAmt,
     afterBoqDiscount,
+    laborPercent,
+    laborAmt,
+    contingencyPercent,
+    contingencyAmt,
+    baseForGst,
     gstByRate: scaledGstByRate,
     totalGst,
     grandTotal,
@@ -230,6 +244,9 @@ export const duplicateBoq = (id) => {
 export const blankItem = () => ({
   id: genShortId(),
   description: "",
+  // Brand / model / finish — kept distinct from the free-text description so
+  // procurement can match against what was actually specified to the client.
+  spec: "",
   hsn: "",
   qty: 1,
   unit: "nos",
@@ -301,6 +318,11 @@ export const createBoq = ({
     // BOQ = cost; quote = cost × (1 + margin). Persisted so the spread (gross
     // margin) is never lost (Rail 💰). See computeQuoteFromBoq.
     marginPercent: 0,
+    // Both are % markups on the post-discount taxable base — see
+    // computeBoqTotals. Standard line items in a professional interior BOQ,
+    // separate from the per-item material rate.
+    laborPercent: 0,
+    contingencyPercent: 0,
     // Standard 5-stage milestone schedule shared across the org
     // (see src/data/MilestoneConfig.js). Users can still tweak per BOQ.
     paymentTerms: PAYMENT_MILESTONES.map((m) => ({
@@ -309,6 +331,7 @@ export const createBoq = ({
       percent: m.pct,
     })),
     validity: "30 days from issue",
+    warrantyText: "",
     notes: "",
     inclusions: [],
     exclusions: [],
@@ -324,7 +347,7 @@ export const createBoq = ({
 export const computeQuoteFromBoq = (boq) => {
   const totals = computeBoqTotals(boq);
   const marginPercent = Number(boq?.marginPercent) || 0;
-  const cost = totals.afterBoqDiscount; // ex-GST internal cost
+  const cost = totals.baseForGst; // ex-GST internal cost, incl. labour + contingency
   const price = cost * (1 + marginPercent / 100); // ex-GST client price
   return {
     ...totals,

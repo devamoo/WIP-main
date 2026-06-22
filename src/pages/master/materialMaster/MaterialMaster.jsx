@@ -19,13 +19,13 @@ import {
 import {
   listMaterials,
   saveMaterials,
-  addMaterialItem,
-  updateMaterialItem,
-  deleteMaterialItem,
   resetMaterials,
 } from "../../../data/materialLibrary";
+import { listLibrary } from "../../../data/itemLibrary";
+import { listVendors } from "../../../data/vendorStorage";
 import { formatAmount } from "../../../utils/formatAmount";
 import InputField from "../../../components/InputField";
+import SearchableSelect from "../../../components/SearchableSelect";
 
 const MATERIAL_UNITS = [
   { code: "bag", label: "Bag (Cement)" },
@@ -62,10 +62,46 @@ const MaterialMaster = () => {
         (m.specifications || "").toLowerCase().includes(q) ||
         (m.brand || "").toLowerCase().includes(q) ||
         (m.category || "").toLowerCase().includes(q) ||
-        (m.vendor || "").toLowerCase().includes(q)
+        (m.vendorName || m.vendor || "").toLowerCase().includes(q)
       );
     });
   }, [materials, query]);
+
+  const vendors = useMemo(() => listVendors(), []);
+  const vendorOptions = useMemo(
+    () => vendors.map((v) => ({ value: v.id, label: v.name })),
+    [vendors],
+  );
+
+  // If the material being edited references a vendor that's since been
+  // deleted from Vendor Master, inject its saved name as a synthetic option
+  // so the dropdown shows "Acme Supplies" instead of the raw orphaned id.
+  const editingVendorId = editing?.vendorId;
+  const editingVendorOptions =
+    editingVendorId && !vendors.some((v) => v.id === editingVendorId)
+      ? [
+          { value: editingVendorId, label: editing.vendorName || "Unknown vendor (deleted)" },
+          ...vendorOptions,
+        ]
+      : vendorOptions;
+
+  // Derived (not stored) — counts how many Item Master recipes reference
+  // each material, by scanning every grade's components. Avoids a stored
+  // usageCount counter that would need increment/decrement wiring at every
+  // recipe edit site.
+  const usageCounts = useMemo(() => {
+    const map = new Map();
+    listLibrary().forEach((item) => {
+      Object.values(item.recipes || {}).forEach((recipe) => {
+        (recipe?.components || []).forEach((c) => {
+          if (c.materialId) {
+            map.set(c.materialId, (map.get(c.materialId) || 0) + 1);
+          }
+        });
+      });
+    });
+    return map;
+  }, []);
 
   const stats = useMemo(() => {
     const totalCount = materials.length;
@@ -100,18 +136,37 @@ const MaterialMaster = () => {
       return;
     }
 
+    const gstInput = editing.gstPercent;
+    const gstPercent =
+      gstInput === "" || gstInput === null || gstInput === undefined || Number.isNaN(Number(gstInput))
+        ? 18
+        : Number(gstInput);
+
     const matData = {
       ...editing,
       rate: Number(editing.rate) || 0,
-      gstPercent: Number(editing.gstPercent) || 18,
+      gstPercent,
     };
 
     if (editing.id) {
       // Edit
+      const prevRecord = materials.find((m) => m.id === editing.id);
+      const rateChanged =
+        prevRecord && Number(prevRecord.rate) !== Number(matData.rate);
       setMaterials((prev) =>
         prev.map((m) =>
           m.id === editing.id
-            ? { ...m, ...matData, updatedAt: new Date().toISOString() }
+            ? {
+                ...m,
+                ...matData,
+                ...(rateChanged
+                  ? {
+                      previousRate: prevRecord.rate,
+                      rateChangedAt: new Date().toISOString(),
+                    }
+                  : {}),
+                updatedAt: new Date().toISOString(),
+              }
             : m,
         ),
       );
@@ -121,7 +176,6 @@ const MaterialMaster = () => {
       const newMat = {
         ...matData,
         id: `mat_${Date.now().toString(36)}`,
-        usageCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -339,22 +393,22 @@ const MaterialMaster = () => {
                       </p>
                     )}
 
-                    {(m.sku || m.vendor) && (
+                    {(m.sku || m.vendorName || m.vendor) && (
                       <div className="mt-2.5 pt-2 border-t border-dashed border-bordergray/60 grid grid-cols-2 gap-x-2 gap-y-1 text-[9.5px] text-text-muted">
                         {m.sku && (
                           <div className="truncate">
                             SKU: <span className="font-semibold text-textcolor">{m.sku}</span>
                           </div>
                         )}
-                        {m.vendor && (
+                        {(m.vendorName || m.vendor) && (
                           <div className="truncate">
-                            Vendor: <span className="font-semibold text-textcolor">{m.vendor}</span>
+                            Vendor: <span className="font-semibold text-textcolor">{m.vendorName || m.vendor}</span>
                           </div>
                         )}
                       </div>
                     )}
 
-                    <div className="flex items-center gap-3 text-[10px] text-text-muted mt-3">
+                    <div className="flex items-center gap-3 text-[10px] text-text-muted mt-3 flex-wrap">
                       <span className="flex items-center gap-0.5">
                         <Hash size={9} /> HSN: {m.hsn || "—"}
                       </span>
@@ -362,6 +416,11 @@ const MaterialMaster = () => {
                       <span className="bg-bg-soft px-1.5 py-0.5 rounded text-textcolor font-medium">
                         Per {unitLabel}
                       </span>
+                      {usageCounts.get(m.id) > 0 && (
+                        <span className="bg-select-blue/5 text-select-blue px-1.5 py-0.5 rounded font-medium">
+                          Used in {usageCounts.get(m.id)} item{usageCounts.get(m.id) === 1 ? "" : "s"}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -370,6 +429,12 @@ const MaterialMaster = () => {
                       Standard Rate
                     </span>
                     <span className="text-[15px] font-extrabold text-textcolor tabular-nums">
+                      {m.previousRate != null &&
+                        Number(m.previousRate) !== Number(m.rate) && (
+                          <span className="text-[10px] text-text-subtle font-normal line-through mr-1">
+                            ₹{Number(m.previousRate).toLocaleString("en-IN")}
+                          </span>
+                        )}
                       ₹{m.rate.toLocaleString("en-IN")}
                       <span className="text-[10px] text-text-muted font-normal">
                         {" "}
@@ -457,14 +522,30 @@ const MaterialMaster = () => {
                   }
                   placeholder="e.g. MAT-CEM-01"
                 />
-                <InputField
-                  label="Preferred Vendor"
-                  value={editing.vendor || ""}
-                  onChange={(e) =>
-                    setEditing((prev) => ({ ...prev, vendor: e.target.value }))
-                  }
-                  placeholder="e.g. Local Supplier"
-                />
+                <div className="flex flex-col">
+                  <label className="mb-1 text-[11px] font-semibold text-darkgray">
+                    Preferred Vendor
+                  </label>
+                  <SearchableSelect
+                    value={editing.vendorId || ""}
+                    onChange={(val) => {
+                      const v = vendors.find((vv) => vv.id === val);
+                      setEditing((prev) => ({
+                        ...prev,
+                        vendorId: val,
+                        vendorName: v?.name || "",
+                      }));
+                    }}
+                    options={editingVendorOptions}
+                    placeholder="Select vendor"
+                    className="bg-light-gray border border-bordergray text-[11px] text-darkgray rounded-md px-3 py-2 w-full focus:outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-300 placeholder-gray-400"
+                  />
+                  {!editing.vendorId && editing.vendor && (
+                    <p className="text-[10px] text-text-subtle mt-1">
+                      Previously: {editing.vendor} — pick a vendor above to link it.
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -491,6 +572,23 @@ const MaterialMaster = () => {
                   required
                 />
               </div>
+
+              {editing.id &&
+                (() => {
+                  const original = materials.find((m) => m.id === editing.id);
+                  const rateDirty =
+                    original &&
+                    editing.rate !== "" &&
+                    Number(editing.rate) !== Number(original.rate);
+                  const affected = usageCounts.get(editing.id) || 0;
+                  if (!rateDirty || affected === 0) return null;
+                  return (
+                    <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                      Used in {affected} item recipe{affected === 1 ? "" : "s"} — their
+                      catalog rate will update to reflect this on next view/save.
+                    </p>
+                  );
+                })()}
 
               <div className="grid grid-cols-2 gap-4">
                 <InputField

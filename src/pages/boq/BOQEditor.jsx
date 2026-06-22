@@ -32,6 +32,7 @@ import {
   RotateCcw,
   Link2,
   Edit3,
+  ShieldCheck,
 } from "lucide-react";
 import {
   createBoq,
@@ -270,7 +271,11 @@ const BOQEditor = () => {
   const handleItemFormSave = (form) => {
     const sid = itemFormSection;
     if (!sid) return;
-    const newItem = formToBoqItem(form, blankItem());
+    const newItem = formToBoqItem(form, {
+      ...blankItem(),
+      source: "manual",
+      isVariation: !!boq.siteID,
+    });
     setBoq((prev) => ({
       ...prev,
       sections: prev.sections.map((s) =>
@@ -313,6 +318,8 @@ const BOQEditor = () => {
     sec.items = libItems.map((lib) => ({
       ...blankItem(),
       ...libraryToItem(lib),
+      source: "manual",
+      isVariation: !!boq.siteID,
     }));
     setBoq((prev) => ({
       ...prev,
@@ -331,6 +338,8 @@ const BOQEditor = () => {
     const newItems = libItems.map((lib) => ({
       ...blankItem(),
       ...libraryToItem(lib),
+      source: "manual",
+      isVariation: !!boq.siteID,
     }));
     setBoq((prev) => ({
       ...prev,
@@ -616,6 +625,45 @@ const BOQEditor = () => {
       </div>
 
       <div className="px-6 py-5">
+        {boq.surveyStale && (
+          <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12px] text-amber-800">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+            <span>
+              The linked site survey was unlocked after this BOQ was generated.
+              Treat these quantities as stale until the survey is frozen and the
+              BOQ is regenerated.
+            </span>
+          </div>
+        )}
+        {boq.siteID && Number.isFinite(Number(boq.quotedTotal)) && (
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-select-blue/20 bg-select-blue/[0.03] p-3 md:grid-cols-4">
+            <CommercialValue
+              label="Proposal quoted"
+              value={boq.quotedTotal}
+              tone="text-select-blue"
+            />
+            <CommercialValue
+              label="Frozen measured"
+              value={boq.measuredTotal}
+              tone="text-textcolor"
+            />
+            <CommercialValue
+              label="Current BOQ"
+              value={totals.grandTotal}
+              tone="text-purple-700"
+            />
+            <CommercialValue
+              label="Survey difference"
+              value={boq.surveyVariance}
+              signed
+              tone={
+                Number(boq.surveyVariance) > Number(boq.surveyToleranceAmount || 15000)
+                  ? "text-red-600"
+                  : "text-emerald-700"
+              }
+            />
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5">
           {/* ── Left: Sections + line items ─────────────────────────────── */}
           <main className="space-y-5 min-w-0">
@@ -686,6 +734,15 @@ const BOQEditor = () => {
                     value={boq.validity || ""}
                     onChange={(e) => update({ validity: e.target.value })}
                     placeholder="30 days from issue"
+                    className={inputBase}
+                  />
+                </Field>
+                <Field icon={<ShieldCheck size={11} />} label="Warranty / Defect Liability">
+                  <input
+                    type="text"
+                    value={boq.warrantyText || ""}
+                    onChange={(e) => update({ warrantyText: e.target.value })}
+                    placeholder="e.g. 12 months on hardware, 60 days defect liability"
                     className={inputBase}
                   />
                 </Field>
@@ -1102,6 +1159,53 @@ const BOQEditor = () => {
                   value={formatAmount(totals.afterBoqDiscount)}
                 />
 
+                {/* Labour & contingency — % markups on the discounted base */}
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-text-muted flex items-center gap-1">
+                    <Percent size={11} /> Labour
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={boq.laborPercent || 0}
+                      onChange={(e) =>
+                        update({ laborPercent: Number(e.target.value) || 0 })
+                      }
+                      className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
+                    />
+                    <span className="text-[10.5px] font-semibold text-text-muted">%</span>
+                  </div>
+                </div>
+                {totals.laborAmt > 0 && (
+                  <Row label="Labour value" value={formatAmount(totals.laborAmt)} />
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-text-muted flex items-center gap-1">
+                    <Percent size={11} /> Contingency
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={boq.contingencyPercent || 0}
+                      onChange={(e) =>
+                        update({ contingencyPercent: Number(e.target.value) || 0 })
+                      }
+                      className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
+                    />
+                    <span className="text-[10.5px] font-semibold text-text-muted">%</span>
+                  </div>
+                </div>
+                {totals.contingencyAmt > 0 && (
+                  <Row label="Contingency value" value={formatAmount(totals.contingencyAmt)} />
+                )}
+                {(totals.laborAmt > 0 || totals.contingencyAmt > 0) && (
+                  <Row
+                    label="Taxable (incl. labour/contingency)"
+                    value={formatAmount(totals.baseForGst)}
+                  />
+                )}
+
                 <div className="border-t border-bordergray pt-2 space-y-1">
                   {Object.entries(totals.gstByRate || {})
                     .filter(([, v]) => v > 0)
@@ -1456,6 +1560,9 @@ const ItemRow = ({
 }) => {
   const r = computeItemAmount(item);
   const computedQty = computeItemQty(item);
+  const hasSurveyDrift =
+    item.siteSurveySource &&
+    Math.abs(computedQty - (Number(item.siteMeasuredQty) || 0)) > 0.001;
   const dimInfo = DIMENSIONAL_UNITS[item.unit];
   const dimsEnabled = item.dimensions?.enabled;
   const canUseDims = !!dimInfo;
@@ -1499,6 +1606,28 @@ const ItemRow = ({
             placeholder="Item description"
             className={`${compactInput} font-medium`}
           />
+          {item.siteSurveySource && (
+            <span
+              className={`inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                hasSurveyDrift
+                  ? "border border-amber-200 bg-amber-50 text-amber-700"
+                  : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+              }`}
+              title={
+                hasSurveyDrift
+                  ? `Editor quantity differs from site measurement (${item.siteMeasuredQty})`
+                  : "Quantity matches the frozen site survey"
+              }
+            >
+              {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
+              {hasSurveyDrift ? "Survey drift" : "Site measured"}
+            </span>
+          )}
+          {item.isVariation && (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
+              <AlertTriangle size={9} /> Variation
+            </span>
+          )}
         </div>
         <p className="text-[9.5px] text-text-muted mt-1 ml-1">
           HSN{" "}
@@ -1516,6 +1645,13 @@ const ItemRow = ({
             {item.gstPercent || 0}%
           </span>
         </p>
+        {item.siteSurveySource && (
+          <p className="mt-0.5 ml-1 text-[9.5px] text-text-subtle">
+            Quoted: {Number(item.quotedQty || 0).toLocaleString("en-IN")} {unitLabel}
+            {" · "}{formatAmount(item.quotedAmount || 0)}
+            {" · "}Frozen measured: {Number(item.siteMeasuredQty || 0).toLocaleString("en-IN")} {unitLabel}
+          </p>
+        )}
         {(item.materials || []).length > 0 && (
           <p className="text-[9.5px] text-text-subtle mt-0.5 ml-1 truncate">
             <span
@@ -1669,6 +1805,24 @@ const ItemRow = ({
                 <Link2 size={9} /> Library
               </button>
             )}
+            {item.siteSurveySource && (
+              <span
+                className={`mt-1 inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                  hasSurveyDrift
+                    ? "border border-amber-200 bg-amber-50 text-amber-700"
+                    : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                }`}
+                title={`Frozen site quantity: ${item.siteMeasuredQty}`}
+              >
+                {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
+                {hasSurveyDrift ? "Survey drift" : "Site measured"}
+              </span>
+            )}
+            {item.isVariation && (
+              <span className="mt-1 inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
+                <AlertTriangle size={9} /> Variation
+              </span>
+            )}
             <input
               type="text"
               value={item.description}
@@ -1677,6 +1831,13 @@ const ItemRow = ({
               className={`${compactInput} font-medium`}
             />
           </div>
+          <input
+            type="text"
+            value={item.spec || ""}
+            onChange={(e) => onUpdate({ spec: e.target.value })}
+            placeholder="Brand / model / finish (e.g. Hettich soft-close, Greenply BWP 19mm)"
+            className={`${compactInput} mt-1 text-text-muted italic`}
+          />
           {(item.materials || []).length > 0 && (
             <p className="text-[9.5px] text-text-subtle mt-1 truncate">
               <span
@@ -2265,6 +2426,21 @@ const FooterStat = ({ label, value, accent = "text-textcolor" }) => (
     </span>
   </div>
 );
+
+const CommercialValue = ({ label, value, signed = false, tone = "text-textcolor" }) => {
+  const amount = Number(value) || 0;
+  const prefix = signed && amount > 0 ? "+" : "";
+  return (
+    <div className="rounded-lg border border-bordergray bg-white px-3 py-2">
+      <p className="text-[9px] font-bold uppercase tracking-wider text-text-muted">
+        {label}
+      </p>
+      <p className={`mt-0.5 text-[13px] font-bold tabular-nums ${tone}`}>
+        {prefix}{formatAmount(amount)}
+      </p>
+    </div>
+  );
+};
 
 const BentoStat = ({ icon, label, value, tint }) => {
   const tints = {

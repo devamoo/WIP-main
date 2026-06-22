@@ -10,6 +10,7 @@ import {
   MapPin,
   Calendar,
   Building2,
+  ShieldCheck,
 } from "lucide-react";
 import {
   computeBoqTotals,
@@ -229,6 +230,11 @@ const BOQDocument = ({ boq, totals, gstSplits }) => {
               <Calendar size={9} /> Validity: {boq.validity}
             </p>
           )}
+          {boq.warrantyText && (
+            <p className="text-[10.5px] text-text-muted mt-0.5 flex items-center gap-1">
+              <ShieldCheck size={9} /> Warranty: {boq.warrantyText}
+            </p>
+          )}
         </div>
       </div>
 
@@ -283,6 +289,11 @@ const BOQDocument = ({ boq, totals, gstSplits }) => {
                           <p className="text-textcolor leading-snug">
                             {item.description || "—"}
                           </p>
+                          {item.spec && (
+                            <p className="text-[9px] text-text-subtle italic mt-0.5 leading-snug">
+                              {item.spec}
+                            </p>
+                          )}
                           {(item.materials || []).length > 0 && (
                             <p className="text-[9px] text-text-muted mt-0.5 leading-snug">
                               {item.materials
@@ -358,6 +369,18 @@ const BOQDocument = ({ boq, totals, gstSplits }) => {
             <Row
               label="After Discount"
               value={formatINR(totals.afterBoqDiscount)}
+            />
+          )}
+          {totals.laborAmt > 0 && (
+            <Row
+              label={`Add: Labour (${totals.laborPercent}%)`}
+              value={formatINR(totals.laborAmt)}
+            />
+          )}
+          {totals.contingencyAmt > 0 && (
+            <Row
+              label={`Add: Contingency (${totals.contingencyPercent}%)`}
+              value={formatINR(totals.contingencyAmt)}
             />
           )}
           {gstSplits.map((g) => (

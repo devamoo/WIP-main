@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   FiGrid,
   FiCheckCircle,
@@ -8,41 +8,68 @@ import {
   FiLock,
   FiX,
   FiAlertTriangle,
+  FiTrash2,
 } from "react-icons/fi";
 import { DIMENSIONAL_UNITS } from "../../../data/boqStorage";
 import {
   elKey,
+  getElementMeasurement,
   readDims,
   writeDims,
   qtyFor,
+  measuredUnitFor,
   areasForSite,
   getSurveyMeasureState,
+  getSurveyVsProposalVariance,
   generateAppSurveyData,
+  readCustomItems,
+  writeCustomItems,
 } from "../../../data/surveyMeasureStorage";
 import {
   getDesignFlow,
   startDesign,
   DESIGN_STAGES,
+  unfreezeSurvey,
 } from "../../../data/designFlowStorage";
+import { listMaterials } from "../../../data/materialLibrary";
+import { listLibrary } from "../../../data/itemLibrary";
+import { computeAllGrades, materialsById, GRADES } from "../../../data/rateBuildup";
+import { storeFile, getFile, deleteFile } from "../../../utils/fileStorage";
 
-// Read-only survey view. Measurements + photos are captured on the field app —
-// here we just MAP and display them. Nothing is entered on the dashboard.
+// Measurements + photos are normally captured on the field app and synced in
+// (demo: "Sync from app"). Until a real field app exists, this view also lets
+// staff enter both directly here — same dims shape either way.
 
 const formula = (unit, d) => {
   const q = qtyFor(unit, d);
-  if (!DIMENSIONAL_UNITS[unit]) return `${Number(d?.nos) || 0} ${unit}`;
-  const parts = [d?.length, d?.breadth, d?.height]
-    .map((v) => Number(v) || 0)
-    .filter((v) => v > 0);
-  const area = `${parts.join(" × ") || 0} = ${q.toLocaleString("en-IN")} ${unit}`;
+  const info = DIMENSIONAL_UNITS[unit];
   const nos = Number(d?.nos) || 0;
-  return nos > 0 ? `${area} · ${nos} nos` : area;
+  if (!info) return `${nos} ${unit}`;
+  if (info.kind === "length") {
+    return `${Number(d?.length) || 0} × ${nos || 1} = ${q.toLocaleString("en-IN")} ${unit}`;
+  }
+  const second = Number(d?.breadth) || Number(d?.height) || 0;
+  return `${Number(d?.length) || 0} × ${second} × ${nos || 1} = ${q.toLocaleString("en-IN")} ${unit}`;
 };
 
-const SurveyMeasurements = ({ site }) => {
+const genCustomId = () =>
+  `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+const SurveyMeasurements = ({ site, onExpandPhoto }) => {
   const siteID = site.siteID;
   const areas = areasForSite(site);
   const [dims, setDims] = useState(() => readDims(siteID));
+  const [photoUrls, setPhotoUrls] = useState({});
+  const photoUrlCache = useRef({});
+
+  const materialsList = listMaterials();
+  const libraryList = listLibrary();
+  const materialLookup = materialsById(materialsList);
+
+  const [showAddCustomModal, setShowAddCustomModal] = useState(false);
+  const [customItemArea, setCustomItemArea] = useState("");
+  const [customItemLibId, setCustomItemLibId] = useState("");
+  const [customItemQty, setCustomItemQty] = useState("1");
 
   // The survey → design handoff. Once design starts, the survey is frozen
   // (read-only, no re-sync) and this record drives the design pipeline.
@@ -50,12 +77,120 @@ const SurveyMeasurements = ({ site }) => {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const designStarted = !!designFlow;
 
+  useEffect(() => {
+    const handler = () => {
+      setDims(readDims(siteID));
+      setDesignFlow(getDesignFlow(siteID));
+    };
+    window.addEventListener("siteDataChanged", handler);
+    return () => window.removeEventListener("siteDataChanged", handler);
+  }, [siteID]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refs = Object.values(dims)
+      .flatMap((d) => d?.images || [])
+      .filter((image) => image?.fileId && !photoUrlCache.current[image.fileId]);
+    Promise.all(
+      refs.map(async (image) => {
+        const blob = await getFile(image.fileId);
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        if (cancelled) return URL.revokeObjectURL(url);
+        photoUrlCache.current[image.fileId] = url;
+      }),
+    ).then(() => {
+      if (!cancelled) setPhotoUrls({ ...photoUrlCache.current });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dims]);
+
+  useEffect(
+    () => () => {
+      Object.values(photoUrlCache.current).forEach(URL.revokeObjectURL);
+    },
+    [],
+  );
+
+  const photoSrc = (image) =>
+    typeof image === "string" ? image : photoUrls[image?.fileId] || "";
+
+  const materialOptionsFor = (el) => {
+    const work =
+      libraryList.find((item) => item.id === el.masterId) ||
+      libraryList.find((item) => item.description === el.name);
+    if (!work?.recipes) return [];
+    const rates = computeAllGrades(work.recipes, materialLookup);
+    return GRADES.map((grade) => ({
+      id: `${work.id}:${grade.key}`,
+      name: `${grade.label} specification`,
+      specifications: `${work.description} · ${grade.label}`,
+      rate: Math.round(rates[grade.key] || 0),
+      unit: work.unit,
+      grade: grade.key,
+      materials: work.recipes[grade.key]?.components || [],
+    })).filter((option) => option.rate > 0);
+  };
+
+  const handleAddCustomItem = () => {
+    const libItem = libraryList.find((it) => it.id === customItemLibId);
+    if (!libItem || !customItemArea) return;
+
+    const nextCustomItems = readCustomItems(siteID);
+    const newCustomItem = {
+      id: genCustomId(),
+      masterId: libItem.id,
+      area: customItemArea,
+      heading: customItemArea,
+      itemName: libItem.description,
+      description: libItem.description,
+      unit: libItem.unit,
+      qty: Number(customItemQty) || 1,
+      rate: Number(libItem.rate) || 0,
+      days: libItem.days,
+      materials: libItem.materials || [],
+      isCustom: true,
+    };
+    if (!writeCustomItems(siteID, [...nextCustomItems, newCustomItem])) {
+      alert("The custom survey item could not be saved. Please free browser storage and retry.");
+      return;
+    }
+    setShowAddCustomModal(false);
+    setCustomItemArea("");
+    setCustomItemLibId("");
+    setCustomItemQty("1");
+    window.dispatchEvent(new Event("siteDataChanged"));
+  };
+
+  const handleRemoveCustomItem = (areaName, el) => {
+    const next = readCustomItems(siteID).filter(
+      (item) => item.id !== el.scopeItemId,
+    );
+    const key = elKey(areaName, el.name, el.scopeItemId);
+    const nextDims = { ...dims };
+    const images = nextDims[key]?.images || [];
+    images.forEach((image) => {
+      if (image?.fileId) deleteFile(image.fileId);
+    });
+    delete nextDims[key];
+    if (!writeDims(siteID, nextDims)) {
+      alert("The custom item could not be removed because survey storage failed.");
+      return;
+    }
+    setDims(nextDims);
+    if (!writeCustomItems(siteID, next)) {
+      alert("The custom item list could not be saved.");
+    }
+  };
+
   // Demo: pull the field app's payload (per-work measurements + photos).
   const syncFromApp = () => {
     if (designStarted) return; // frozen after handoff
     const data = generateAppSurveyData(site);
-    setDims(data.dims);
-    writeDims(siteID, data.dims);
+    if (writeDims(siteID, data.dims)) setDims(data.dims);
+    else alert("Survey measurements could not be saved. Please free browser storage and try again.");
   };
 
   const state = getSurveyMeasureState(site);
@@ -67,12 +202,14 @@ const SurveyMeasurements = ({ site }) => {
     (n, a) =>
       n +
       a.elements.filter(
-        (el) => (dims[elKey(a.area, el.name)]?.images?.length || 0) > 0,
+        (el) => (getElementMeasurement(dims, a.area, el).images?.length || 0) > 0,
       ).length,
     0,
   );
   const photosComplete = totalWorks > 0 && worksWithPhotos === totalWorks;
-  const canMoveToDesign = state.complete && photosComplete;
+  const variance = getSurveyVsProposalVariance(site);
+  const varianceOk = !variance.amountOverLimit;
+  const canMoveToDesign = state.complete && photosComplete && varianceOk;
 
   const moveToDesign = () => {
     const flow = startDesign(site, { areas, surveyState: state });
@@ -81,11 +218,10 @@ const SurveyMeasurements = ({ site }) => {
   };
 
   const areaSqft = (a) =>
-    a.elements.reduce(
-      (s, el) =>
-        s + (el.unit === "sqft" ? qtyFor(el.unit, dims[elKey(a.area, el.name)]) : 0),
-      0,
-    );
+    a.elements.reduce((s, el) => {
+      const d = getElementMeasurement(dims, a.area, el);
+      return s + (measuredUnitFor(el.unit, d) === "sqft" ? qtyFor(el.unit, d) : 0);
+    }, 0);
 
   if (!state.hasPreset) {
     return (
@@ -95,8 +231,8 @@ const SurveyMeasurements = ({ site }) => {
           Survey Measurements
         </h3>
         <p className="text-[13px] text-text-muted">
-          No quote works for this client yet. The survey is built strictly from
-          the client&apos;s proposal — send a proposal so the works appear here.
+          No proposal works are available for this site. Link a client proposal
+          or choose a valid Proposal Master preset and property type.
         </p>
       </div>
     );
@@ -115,7 +251,16 @@ const SurveyMeasurements = ({ site }) => {
             Captured on the field app — read-only here.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {!designStarted && (
+            <button
+              type="button"
+              onClick={() => setShowAddCustomModal(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-bg-soft hover:bg-bordergray text-darkgray text-[11px] font-semibold border border-bordergray transition-colors"
+            >
+              <FiGrid size={11} /> Add Custom Item
+            </button>
+          )}
           <button
             type="button"
             onClick={syncFromApp}
@@ -138,21 +283,57 @@ const SurveyMeasurements = ({ site }) => {
               {state.measured}/{state.total} measured
             </span>
           )}
-          {designStarted ? (
-            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-violet-100 text-violet-700 border border-violet-200">
-              <FiLock size={12} /> Design in progress
+          {photosComplete ? (
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">
+              <FiImage size={12} /> All photographed
             </span>
+          ) : (
+            <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-blue-50 text-select-blue border border-blue-100">
+              {worksWithPhotos}/{totalWorks} photos
+            </span>
+          )}
+          {(variance.quotedSqft > 0 || variance.quotedAmount > 0) &&
+            (varianceOk ? (
+              <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">
+                <FiCheckCircle size={12} /> Matches proposal
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-red-50 text-red-600 border border-red-200">
+                <FiAlertTriangle size={12} />
+                Amount exceeds proposal + ₹15,000
+              </span>
+            ))}
+          {designStarted ? (
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-violet-100 text-violet-700 border border-violet-200">
+                <FiLock size={12} /> Design in progress
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("Unlock this survey? The site will return to Survey and the current design pipeline will be archived for history.")) {
+                    unfreezeSurvey(siteID);
+                  }
+                }}
+                className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[11.5px] font-bold transition-colors"
+              >
+                Unlock Survey
+              </button>
+            </div>
           ) : (
             <button
               type="button"
               onClick={() => setConfirmOpen(true)}
-              disabled={!canMoveToDesign}
               title={
                 canMoveToDesign
                   ? "Freeze the survey and start the design pipeline"
-                  : "Measure every work and sync photos first"
+                  : "See what's still missing"
               }
-              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 text-white text-[11px] font-bold shadow-sm hover:shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-bold shadow-sm hover:shadow-md transition-all ${
+                canMoveToDesign
+                  ? "bg-linear-to-br from-violet-600 to-violet-800 text-white"
+                  : "bg-bg-soft text-text-muted border border-bordergray"
+              }`}
             >
               Move to Design <FiArrowRight size={12} />
             </button>
@@ -251,37 +432,178 @@ const SurveyMeasurements = ({ site }) => {
               ) : (
                 <div className="space-y-2.5">
                   {area.elements.map((el) => {
-                    const d = dims[elKey(area.area, el.name)] || {};
+                    const key = elKey(area.area, el.name, el.scopeItemId);
+                    const d = getElementMeasurement(dims, area.area, el);
                     const imgs = d.images || [];
+                    const info = DIMENSIONAL_UNITS[el.unit];
+                    const isArea = info?.kind === "area";
+                    const isLength = info?.kind === "length";
+                    const materialOptions = materialOptionsFor(el);
+
+                    const updateDim = (patch) => {
+                      if (designStarted) return;
+                      const nextDims = { ...dims, [key]: { ...d, ...patch } };
+                      if (writeDims(siteID, nextDims)) setDims(nextDims);
+                      else alert("This survey change could not be saved. Please free browser storage and retry.");
+                    };
+
+                    const addPhotos = async (fileList) => {
+                      if (designStarted) return;
+                      const files = Array.from(fileList || []);
+                      if (files.length === 0) return;
+                      const refs = [];
+                      for (const file of files) {
+                        const fileId = `survey_${siteID}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+                        const saved = await storeFile(fileId, file);
+                        if (saved) refs.push({ fileId, name: file.name, type: file.type });
+                      }
+                      updateDim({ images: [...(d.images || []), ...refs] });
+                    };
+
+                    const removePhoto = (idx) => {
+                      if (designStarted) return;
+                      const removed = imgs[idx];
+                      if (removed?.fileId) deleteFile(removed.fileId);
+                      updateDim({ images: imgs.filter((_, i) => i !== idx) });
+                    };
+
                     return (
                       <div
-                        key={el.name}
+                        key={el.scopeItemId || el.name}
                         className="rounded-xl border border-bg-soft bg-palewhite/40 p-3"
                       >
                         <div className="flex items-center justify-between gap-3 mb-2">
-                          <span className="text-[13px] font-semibold text-darkgray">
+                          <span className="flex items-center gap-2 text-[13px] font-semibold text-darkgray">
                             {el.name}
+                            {el.isCustom && !designStarted && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCustomItem(area.area, el)}
+                                className="rounded p-1 text-red-500 hover:bg-red-50"
+                                title="Remove custom survey item"
+                              >
+                                <FiTrash2 size={11} />
+                              </button>
+                            )}
                           </span>
                           <span className="text-[13px] font-bold text-select-blue tabular-nums whitespace-nowrap">
                             {formula(el.unit, d)}
                           </span>
                         </div>
-                        {imgs.length > 0 ? (
-                          <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
-                            {imgs.map((src, i) => (
-                              <img
-                                key={i}
-                                src={src}
-                                alt={`${el.name} ${i + 1}`}
-                                className="w-full h-16 object-cover rounded-md border border-bordergray"
+
+                        {/* Manual measurement entry — L/B/H captured for every
+                            work regardless of unit, since which dimensions
+                            actually matter varies (floor area = L×B, wall
+                            area = L×H, a one-off item may need all three). */}
+                        <div className="flex flex-wrap items-center gap-2 mb-2.5">
+                          {info && (
+                            <DimInput
+                              label="Length"
+                              suffix={info.suffix}
+                              value={d.length}
+                              onChange={(v) => updateDim({ length: v })}
+                              disabled={designStarted}
+                            />
+                          )}
+                          {isArea && (
+                            <>
+                              <DimInput
+                                label="Breadth"
+                                suffix={info?.suffix}
+                                value={d.breadth}
+                                onChange={(v) => updateDim({ breadth: v, height: "" })}
+                                disabled={designStarted}
                               />
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-[11px] text-text-subtle italic flex items-center gap-1.5">
-                            <FiImage size={11} /> No photos synced yet.
-                          </p>
-                        )}
+                              <DimInput
+                                label="Height (instead)"
+                                suffix={info?.suffix}
+                                value={d.height}
+                                onChange={(v) => updateDim({ height: v, breadth: "" })}
+                                disabled={designStarted}
+                              />
+                            </>
+                          )}
+                          <DimInput
+                            label={isArea || isLength ? "Nos" : "Quantity"}
+                            value={d.nos}
+                            onChange={(v) => updateDim({ nos: v })}
+                            disabled={designStarted}
+                          />
+                        </div>
+
+                        {/* Material Specification Selection */}
+                        <div className="flex items-center gap-2 mb-3">
+                          <label className="text-[11px] text-text-muted flex items-center gap-1.5 w-full">
+                            Work specification:
+                            <select
+                              value={d.selectedMaterial?.id || ""}
+                              disabled={designStarted || materialOptions.length === 0}
+                              onChange={(e) => {
+                                const selectedMat = materialOptions.find((m) => m.id === e.target.value);
+                                updateDim({ selectedMaterial: selectedMat || null });
+                              }}
+                              className="rounded-md border border-bordergray bg-white px-2 py-1.5 text-[12px] text-darkgray focus:outline-none focus:border-select-blue disabled:bg-bg-soft disabled:text-text-subtle w-full max-w-[340px]"
+                            >
+                              <option value="">-- Original proposal specification --</option>
+                              {materialOptions.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} · ₹{m.rate}/{m.unit}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        {/* Photos */}
+                        <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                          {imgs.map((image, i) => {
+                            const src = photoSrc(image);
+                            return (
+                            <div key={i} className="relative group">
+                              {src && (
+                                <img
+                                  src={src}
+                                  alt={`${el.name} ${i + 1}`}
+                                  onClick={() => onExpandPhoto?.(imgs.map(photoSrc), i, `${area.area} — ${el.name}`)}
+                                  className="w-full h-16 object-cover rounded-md border border-bordergray cursor-pointer hover:opacity-90"
+                                />
+                              )}
+                              {!designStarted && (
+                                <button
+                                  type="button"
+                                  onClick={() => removePhoto(i)}
+                                  title="Remove photo"
+                                  className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <FiX size={8} />
+                                </button>
+                              )}
+                            </div>
+                          );})}
+                          {!designStarted && (
+                            <label
+                              title="Add photo"
+                              className="h-16 rounded-md border border-dashed border-bordergray flex items-center justify-center cursor-pointer text-text-subtle hover:border-select-blue hover:text-select-blue transition-colors"
+                            >
+                              <FiImage size={14} />
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => {
+                                  addPhotos(e.target.files);
+                                  e.target.value = "";
+                                }}
+                              />
+                            </label>
+                          )}
+                          {imgs.length === 0 && designStarted && (
+                            <p className="col-span-full text-[11px] text-text-subtle italic flex items-center gap-1.5">
+                              <FiImage size={11} /> No photos synced.
+                            </p>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -326,6 +648,16 @@ const SurveyMeasurements = ({ site }) => {
                 ok={photosComplete}
                 label={`Survey photos received (${worksWithPhotos}/${totalWorks})`}
               />
+              {variance.quotedAmount > 0 && (
+                <ChecklistRow
+                  ok={!variance.amountOverLimit}
+                  label={
+                    variance.amountOverLimit
+                      ? `Measured total is ₹${variance.amountDifference.toLocaleString("en-IN", { maximumFractionDigits: 0 })} above the proposal — maximum allowed increase is ₹${variance.maxVarianceAmount.toLocaleString("en-IN")}`
+                      : `Measured total is allowed (difference ${variance.amountDifference >= 0 ? "+" : "−"}₹${Math.abs(variance.amountDifference).toLocaleString("en-IN", { maximumFractionDigits: 0 })}; increases up to ₹${variance.maxVarianceAmount.toLocaleString("en-IN")} are permitted)`
+                  }
+                />
+              )}
             </div>
 
             <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
@@ -360,9 +692,107 @@ const SurveyMeasurements = ({ site }) => {
           </div>
         </div>
       )}
+      {/* Add Custom Item Modal */}
+      {showAddCustomModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-xl">
+            <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-100">
+              <h3 className="text-base font-bold text-darkgray">
+                Add Custom Survey Item
+              </h3>
+              <button
+                onClick={() => setShowAddCustomModal(false)}
+                className="text-text-muted hover:text-darkgray"
+              >
+                <FiX size={16} />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-semibold text-text-muted mb-1">
+                  Area / Room (e.g. Living Room, Foyer)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Corridor, Balcony"
+                  value={customItemArea}
+                  onChange={(e) => setCustomItemArea(e.target.value)}
+                  className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px] bg-white text-darkgray focus:outline-none focus:border-select-blue"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-text-muted mb-1">
+                  Select Work from Library
+                </label>
+                <select
+                  value={customItemLibId}
+                  onChange={(e) => setCustomItemLibId(e.target.value)}
+                  className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px] bg-white text-darkgray focus:outline-none focus:border-select-blue"
+                >
+                  <option value="">-- Choose library item --</option>
+                  {libraryList.map((lib) => (
+                    <option key={lib.id} value={lib.id}>
+                      {lib.description} ({lib.unit}) — ₹{lib.rate}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-text-muted mb-1">
+                  Quoted Assumed Qty
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={customItemQty}
+                  onChange={(e) => setCustomItemQty(e.target.value)}
+                  className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px] bg-white text-darkgray focus:outline-none focus:border-select-blue"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                onClick={() => setShowAddCustomModal(false)}
+                className="px-4 py-2 rounded-lg text-[13px] font-semibold text-text-muted hover:bg-bg-soft"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddCustomItem}
+                disabled={!customItemArea || !customItemLibId}
+                className="px-5 py-2 rounded-lg text-[13px] font-semibold text-white bg-select-blue hover:bg-blue-950 disabled:opacity-40"
+              >
+                Add Item to Survey
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
+const DimInput = ({ label, suffix, value, onChange, disabled }) => (
+  <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
+    {label}
+    <span className="relative">
+      <input
+        type="number"
+        min="0"
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="0"
+        className="w-16 rounded-md border border-bordergray bg-white px-2 py-1 text-[12px] text-darkgray focus:outline-none focus:border-select-blue disabled:bg-bg-soft disabled:text-text-subtle"
+      />
+      {suffix && (
+        <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] text-text-subtle">
+          {suffix}
+        </span>
+      )}
+    </span>
+  </label>
+);
 
 const ChecklistRow = ({ ok, label }) => (
   <div className="flex items-center gap-2 text-[12px]">

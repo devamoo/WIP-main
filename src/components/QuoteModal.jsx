@@ -70,6 +70,7 @@ import {
   saveQuote,
   getConfigForType,
   getPropertyTypesForPreset,
+  getQuotesForParent,
 } from "../data/QuotePresets";
 import { computeLibraryItemAmount, computeLibraryItemArea } from "../data/itemLibrary";
 import { formatAmount } from "../utils/formatAmount";
@@ -703,6 +704,22 @@ const QuoteModal = ({
     [formData.scopeItems],
   );
 
+  // Resend guardrail: the revised total can't drift more than MAX_INCREASE_PCT
+  // above the ORIGINAL proposal (the first one ever sent for this lead, not
+  // just the latest) — otherwise the client is being re-quoted a materially
+  // different price under the same "proposal" without a fresh negotiation.
+  const MAX_INCREASE_PCT = 20;
+  const originalQuote = useMemo(() => {
+    if (!isResend || !parentId) return null;
+    const history = getQuotesForParent(parentId);
+    return history[history.length - 1] || null;
+  }, [isResend, parentId]);
+  const originalTotal = originalQuote?.grandTotal || 0;
+  const increasePct = originalTotal
+    ? ((totals.grandTotal - originalTotal) / originalTotal) * 100
+    : 0;
+  const overLimit = originalTotal > 0 && increasePct > MAX_INCREASE_PCT;
+
   const handlePresetChange = (e) => {
     const key = e.target.value;
     setPresetKey(key);
@@ -1123,6 +1140,13 @@ const QuoteModal = ({
     if (!formData.scopeItems?.length) {
       return;
     }
+    if (overLimit) {
+      showToast(
+        `Total exceeds the original proposal by ${increasePct.toFixed(1)}% — over the ${MAX_INCREASE_PCT}% limit. Reduce the scope or get approval before resending.`,
+        "error",
+      );
+      return;
+    }
     // Sync validated recipient data back to formData
     formData.recipientName = validatedData.recipientName;
     formData.recipientEmail = validatedData.recipientEmail;
@@ -1190,7 +1214,10 @@ const QuoteModal = ({
           type="button"
           onClick={rhfHandleSubmit(handleSend)}
           disabled={isSending}
-          className="min-w-[180px] flex items-center justify-center gap-2 px-7 py-2.5 rounded-lg bg-select-blue text-white text-sm font-medium hover:bg-primary shadow-sm transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+          title={overLimit ? `Exceeds the original proposal by ${increasePct.toFixed(1)}% — over the ${MAX_INCREASE_PCT}% limit` : undefined}
+          className={`min-w-[180px] flex items-center justify-center gap-2 px-7 py-2.5 rounded-lg text-white text-sm font-medium shadow-sm transition-all disabled:opacity-70 disabled:cursor-not-allowed ${
+            overLimit ? "bg-red-500 hover:bg-red-600" : "bg-select-blue hover:bg-primary"
+          }`}
         >
           {isSending ? (
             <>
@@ -1556,6 +1583,21 @@ const QuoteModal = ({
                 </span>
               </span>
             </div>
+            {originalTotal > 0 && (
+              <div
+                className={`mt-2 flex items-center justify-end gap-1.5 text-[11px] font-medium ${
+                  overLimit ? "text-red-600" : "text-text-muted"
+                }`}
+              >
+                {overLimit && <AlertTriangle size={12} className="shrink-0" />}
+                Original proposal: {formatAmount(originalTotal)} ·{" "}
+                {increasePct >= 0 ? "+" : ""}
+                {increasePct.toFixed(1)}% vs original
+                {overLimit
+                  ? ` — exceeds the ${MAX_INCREASE_PCT}% limit`
+                  : ""}
+              </div>
+            )}
           </div>
 
           <div className="border-t border-border my-5" />

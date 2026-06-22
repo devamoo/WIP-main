@@ -43,7 +43,9 @@ const getLead = (proposalId) => {
   try {
     const saved = localStorage.getItem("newLeadsData");
     if (saved) newLeads = JSON.parse(saved);
-  } catch {}
+  } catch {
+    // Ignore malformed optional lead cache and continue with seeded data.
+  }
   const allLeads = [...newLeads, ...TableData];
   return allLeads.find((l) => l.proposalId === proposalId) || null;
 };
@@ -90,8 +92,9 @@ export const getAllSites = () => {
       } else if (autoProgress > 0) {
         autoStatus = "In Progress";
       } else {
-        // If 0% progress, determine if it's in Design or Survey phase
-        autoStatus = schedule.confirmedAt ? "Design" : "Survey";
+        // Design is entered only through the frozen survey/feasibility gate.
+        // A confirmed schedule alone must not create a Design site with no basis.
+        autoStatus = "Survey";
       }
 
       // Sync target date with computed planned completion date from schedule
@@ -157,8 +160,20 @@ export const getAllSites = () => {
       siteType: c.location || "Residential",
       location: c.locationSecondary || "Main City",
       fullAddress: c.siteAddress || c.locationSecondary || "Site Location",
-      status: override.status !== undefined ? override.status : null,
-      progress: override.progress !== undefined ? override.progress : 0,
+      // Execution schedule wins once work starts/completes; before that the
+      // explicit Survey/Design gate remains authoritative.
+      status:
+        autoStatus === "In Progress" || autoStatus === "Completed"
+          ? autoStatus
+          : override.status !== undefined
+            ? override.status
+            : autoStatus,
+      progress:
+        autoProgress > 0
+          ? autoProgress
+          : override.progress !== undefined
+            ? override.progress
+            : autoProgress || 0,
       targetDate: override.targetDate || autoTargetDate || defaultTargetDate,
       supervisor: override.supervisor !== undefined ? override.supervisor : null,
       notes: override.notes || autoNotes,

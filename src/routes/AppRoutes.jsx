@@ -10,6 +10,7 @@ import ForgotPassword from "../pages/auth/ForgotPassword";
 import Dashboard from "../pages/dashboard/Dashboard";
 import Signout from "../pages/Signout";
 import NotFound from "../pages/NotFound";
+import VendorQuoteForm from "../pages/procurement/VendorQuoteForm";
 
 // Client Portal eagerly loaded routes
 import ClientForgotPassword from "../pages/auth/ClientForgotPassword";
@@ -37,6 +38,9 @@ const ItemLibrary=lazy(()=>import("../pages/master/itemMaster/ItemLibrary"));
 const TermsAndConditions=lazy(()=>import("../pages/master/termsAndConditions/TermsAndConditions"));
 const BOQList = lazy(() => import("../pages/boq/BOQList"));
 const Procurement = lazy(() => import("../pages/procurement/Procurement"));
+const PoDetail = lazy(() => import("../pages/procurement/PoDetail"));
+const RfqDetail = lazy(() => import("../pages/procurement/RfqDetail"));
+const VendorProfile = lazy(() => import("../pages/procurement/VendorProfile"));
 const Settings = lazy(() => import("../pages/settings/Settings"));
 const BOQEditor = lazy(() => import("../pages/boq/BOQEditor"));
 
@@ -63,6 +67,9 @@ const AppRoutes = () => {
         <Routes>
           <Route path="/" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
+
+          {/* Public, no-login vendor quote submission — reached via a shared link */}
+          <Route path="/vendor-quote/:rfqId" element={<VendorQuoteForm />} />
           
           {/* Client Portal Public Routes */}
           <Route path="/client/login" element={<Login />} />
@@ -102,7 +109,12 @@ const AppRoutes = () => {
                 <Route path=":id" element={<ItemLibrary />} />
                 <Route path=":id" element={<TermsAndConditions />} />
               </Route>
-              <Route path="procurement" element={<Procurement />} />
+              <Route path="procurement">
+                <Route index element={<Procurement />} />
+                <Route path="po/:id" element={<PoDetail />} />
+                <Route path="rfq/:id" element={<RfqDetail />} />
+                <Route path="vendors/:id" element={<VendorProfile />} />
+              </Route>
               <Route path="deals" element={<Deals />} />
               <Route path="accounts" element={<Accounts />} />
               <Route path="pipeline" element={<Pipeline />} />

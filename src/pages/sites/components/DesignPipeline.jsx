@@ -1,4 +1,5 @@
 import { useEffect, useState, Fragment } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   FiLock,
   FiClock,
@@ -28,6 +29,7 @@ import {
   setStageDeliverables,
   submitStage,
   generateStageBoq,
+  unfreezeSurvey,
   addSampleDeliverables,
   setArchFee,
   computeArchFee,
@@ -77,6 +79,7 @@ const SectionTitle = ({ children }) => (
 
 const DesignPipeline = ({ site }) => {
   const siteID = site.siteID;
+  const navigate = useNavigate();
   const [flow, setFlow] = useState(() => getDesignFlow(siteID));
   const [selectedKey, setSelectedKey] = useState(() => {
     const f = getDesignFlow(siteID);
@@ -115,6 +118,26 @@ const DesignPipeline = ({ site }) => {
         if (file && !cancelled) {
           const url = URL.createObjectURL(file);
           setFileUrls((prev) => (prev[d.fileId] ? prev : { ...prev, [d.fileId]: url }));
+        }
+      }
+      for (const area of flow?.siteBasis?.areas || []) {
+        for (const el of area.elements || []) {
+          const measurement =
+            flow.siteBasis?.measurements?.[
+              elKey(area.area, el.name, el.scopeItemId)
+            ] ||
+            flow.siteBasis?.measurements?.[elKey(area.area, el.name)] ||
+            {};
+          for (const image of measurement.images || []) {
+            if (!image?.fileId || fileUrls[image.fileId]) continue;
+            const file = await getFile(image.fileId);
+            if (file && !cancelled) {
+              const url = URL.createObjectURL(file);
+              setFileUrls((prev) =>
+                prev[image.fileId] ? prev : { ...prev, [image.fileId]: url },
+              );
+            }
+          }
         }
       }
     })();
@@ -198,6 +221,23 @@ const DesignPipeline = ({ site }) => {
           >
             <FiGrid size={13} /> {showSurvey ? "Hide" : "Show"} survey
           </button>
+          {flow.track !== "Architecture" && (
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  confirm(
+                    "Unlock this survey? The design pipeline will be archived and its generated BOQ marked stale.",
+                  )
+                ) {
+                  unfreezeSurvey(siteID);
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-semibold text-red-600 hover:bg-red-100"
+            >
+              <FiRotateCcw size={13} /> Unlock survey
+            </button>
+          )}
         </div>
       </div>
 
@@ -316,16 +356,29 @@ const DesignPipeline = ({ site }) => {
                       Bill of Quantities{" "}
                       {stage.reviewState === "APPROVED" ? "(approved)" : ""}
                     </SectionTitle>
-                    {firmOwns && (
-                      <button
-                        type="button"
-                        onClick={generateBoq}
-                        className="flex items-center gap-1.5 rounded-lg bg-bg-soft px-3 py-1.5 text-[12px] font-semibold text-grey hover:bg-bordergray"
-                      >
-                        <FiRefreshCw size={13} />{" "}
-                        {stage.boq ? "Regenerate" : "Generate"} from survey
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {stage.boq?.editorBoqId && !stage.boq.syncError && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(`/boq/${stage.boq.editorBoqId || flow.boqId || `BOQ-${siteID}`}`)
+                          }
+                          className="flex items-center gap-1.5 rounded-lg bg-select-blue px-3.5 py-1.5 text-[12px] font-semibold text-white hover:bg-blue-950 transition-all shadow-sm cursor-pointer"
+                        >
+                          Open in BOQ Editor
+                        </button>
+                      )}
+                      {firmOwns && (
+                        <button
+                          type="button"
+                          onClick={generateBoq}
+                          className="flex items-center gap-1.5 rounded-lg bg-bg-soft px-3 py-1.5 text-[12px] font-semibold text-grey hover:bg-bordergray"
+                        >
+                          <FiRefreshCw size={13} />{" "}
+                          {stage.boq ? "Regenerate" : "Generate"} from survey
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {!stage.boq ? (
@@ -335,6 +388,12 @@ const DesignPipeline = ({ site }) => {
                     </p>
                   ) : (
                     <>
+                      {stage.boq.syncError && (
+                        <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11.5px] font-semibold text-red-700">
+                          {stage.boq.syncError} Regenerate after freeing browser
+                          storage or resolving the storage error.
+                        </div>
+                      )}
                       {/* Quoted vs Measured vs Variance summary */}
                       <div className="mb-3 grid grid-cols-3 gap-2.5">
                         <div className="rounded-xl border border-bg-soft bg-palewhite p-3">
@@ -715,7 +774,12 @@ const DesignPipeline = ({ site }) => {
                   </div>
                   <div className="space-y-1.5 p-2.5">
                     {a.elements.map((el) => {
-                      const d = basis.measurements?.[elKey(a.area, el.name)] || {};
+                      const d =
+                        basis.measurements?.[
+                          elKey(a.area, el.name, el.scopeItemId)
+                        ] ||
+                        basis.measurements?.[elKey(a.area, el.name)] ||
+                        {};
                       const imgs = d.images || [];
                       return (
                         <div key={el.name} className="text-[11px]">
@@ -727,14 +791,20 @@ const DesignPipeline = ({ site }) => {
                           </div>
                           {imgs.length > 0 && (
                             <div className="mt-1 flex gap-1">
-                              {imgs.slice(0, 4).map((src, i) => (
-                                <img
-                                  key={i}
-                                  src={src}
-                                  alt=""
-                                  className="h-8 w-8 rounded border border-bordergray object-cover"
-                                />
-                              ))}
+                              {imgs.slice(0, 4).map((image, i) => {
+                                const src =
+                                  typeof image === "string"
+                                    ? image
+                                    : fileUrls[image?.fileId];
+                                return src ? (
+                                  <img
+                                    key={image?.fileId || i}
+                                    src={src}
+                                    alt=""
+                                    className="h-8 w-8 rounded border border-bordergray object-cover"
+                                  />
+                                ) : null;
+                              })}
                             </div>
                           )}
                         </div>
@@ -769,7 +839,7 @@ const ToleranceTile = ({ boq }) => {
     );
   }
   const ok = boq.withinTolerance;
-  const sign = boq.variancePct > 0 ? "+" : "";
+  const sign = boq.variance > 0 ? "+" : boq.variance < 0 ? "−" : "";
   return (
     <div
       className={`rounded-xl border p-3 ${
@@ -788,11 +858,12 @@ const ToleranceTile = ({ boq }) => {
           ok ? "text-emerald-700" : "text-orange-700"
         }`}
       >
-        {sign}
-        {boq.variancePct.toFixed(1)}%
+        {sign}₹{Math.abs(Math.round(boq.variance)).toLocaleString("en-IN")}
       </p>
       <p className={`text-[10px] font-semibold ${ok ? "text-emerald-600" : "text-orange-600"}`}>
-        {ok ? `Within ±${boq.tolerancePct}%` : `Over ±${boq.tolerancePct}% — variation`}
+        {ok
+          ? `Increase is within ₹${boq.toleranceAmount.toLocaleString("en-IN")}`
+          : `Over proposal + ₹${boq.toleranceAmount.toLocaleString("en-IN")}`}
       </p>
     </div>
   );

@@ -4,9 +4,6 @@
 
 const STORAGE_KEY = "material_library";
 
-const genId = () =>
-  `mat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
 // Interior-finish materials — the price source for the work rate build-ups.
 // Names line up with the Item Master work materials so recipes auto-seed.
 export const DEFAULT_MATERIALS = [
@@ -25,7 +22,6 @@ export const DEFAULT_MATERIALS = [
 ].map((item, idx) => ({
   ...item,
   id: `mat_default_${idx}`,
-  usageCount: 0,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString()
 }));
@@ -48,33 +44,6 @@ export const listMaterials = () => {
 
 export const saveMaterials = (items) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-};
-
-export const addMaterialItem = (item) => {
-  const items = listMaterials();
-  const newItem = {
-    ...item,
-    id: genId(),
-    usageCount: 0,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  const updated = [newItem, ...items];
-  saveMaterials(updated);
-  return newItem;
-};
-
-export const updateMaterialItem = (id, changes) => {
-  const items = listMaterials();
-  const updated = items.map((it) =>
-    it.id === id ? { ...it, ...changes, updatedAt: new Date().toISOString() } : it
-  );
-  saveMaterials(updated);
-};
-
-export const deleteMaterialItem = (id) => {
-  const items = listMaterials().filter((it) => it.id !== id);
-  saveMaterials(items);
 };
 
 export const resetMaterials = () => {

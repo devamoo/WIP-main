@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, Package } from "lucide-react";
 import { listAllPurchaseOrders } from "../../../data/procurementStorage";
 import PoFormModal from "../PoFormModal";
@@ -11,25 +12,45 @@ const STATUS_STYLE = {
   received: "bg-emerald-100 text-emerald-700",
 };
 
+const FILTERS = [
+  { id: "active", label: "Active", test: (p) => p.status !== "received" },
+  { id: "received", label: "Received", test: (p) => p.status === "received" },
+  { id: "all", label: "All", test: () => true },
+];
+
 const PurchaseOrders = () => {
+  const navigate = useNavigate();
   const [version, setVersion] = useState(0);
   const [modal, setModal] = useState(false);
+  const [filter, setFilter] = useState("active");
   // version bumps force a localStorage re-read after creating a PO.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const pos = useMemo(() => listAllPurchaseOrders(), [version]);
 
-  const totalValue = pos.reduce((s, p) => s + (Number(p.total) || 0), 0);
+  const activeCount = pos.filter(FILTERS[0].test).length;
+  const filtered = pos.filter(FILTERS.find((f) => f.id === filter).test);
+  const totalValue = filtered.reduce((s, p) => s + (Number(p.total) || 0), 0);
 
   return (
     <div className="h-full overflow-y-auto p-6">
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-[13px] text-text-muted">
-          {pos.length} purchase order{pos.length === 1 ? "" : "s"} ·{" "}
-          <span className="font-semibold text-textcolor">
-            {fmtINR(totalValue)}
-          </span>{" "}
-          ordered
-        </p>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div className="flex items-center gap-1.5">
+          {FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setFilter(f.id)}
+              className={`px-3 py-1.5 rounded-lg text-[11.5px] font-semibold transition-all ${
+                filter === f.id
+                  ? "bg-active-bg text-select-blue"
+                  : "text-text-muted hover:text-textcolor"
+              }`}
+            >
+              {f.label}
+              {f.id === "active" && activeCount > 0 ? ` (${activeCount})` : ""}
+            </button>
+          ))}
+        </div>
         <button
           onClick={() => setModal(true)}
           className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-blue-950"
@@ -37,6 +58,11 @@ const PurchaseOrders = () => {
           <Plus size={14} /> Create PO
         </button>
       </div>
+
+      <p className="text-[13px] text-text-muted mb-3">
+        {filtered.length} purchase order{filtered.length === 1 ? "" : "s"} ·{" "}
+        <span className="font-semibold text-textcolor">{fmtINR(totalValue)}</span>
+      </p>
 
       <div className="bg-white border border-bordergray rounded-xl overflow-hidden">
         <table className="w-full text-[13px]">
@@ -51,19 +77,19 @@ const PurchaseOrders = () => {
             </tr>
           </thead>
           <tbody>
-            {pos.length === 0 ? (
+            {filtered.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-10 text-center text-text-subtle">
                   <Package size={22} className="mx-auto mb-2 opacity-50" />
-                  No purchase orders yet. Create one or generate from a BOQ
-                  take-off.
+                  No purchase orders in this view.
                 </td>
               </tr>
             ) : (
-              pos.map((p) => (
+              filtered.map((p) => (
                 <tr
                   key={p.id}
-                  className="border-t border-bordergray hover:bg-bg-soft/40"
+                  onClick={() => navigate(`/procurement/po/${p.id}`)}
+                  className="border-t border-bordergray hover:bg-bg-soft/40 cursor-pointer"
                 >
                   <td className="px-4 py-3 font-semibold text-textcolor">
                     {p.id}

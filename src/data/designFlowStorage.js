@@ -8,17 +8,20 @@
 // Stored per-site under `designFlow_<siteID>`, mirroring the other storage
 // modules (readJson/writeJson + a change event).
 
-import { saveSite } from "./siteStorage";
+import { saveSite, getSite } from "./siteStorage";
 import {
   readDims,
-  elKey,
+  getElementMeasurement,
   qtyFor,
   getSiteServiceTrack,
   getSiteLead,
+  getProposalBaselineForSite,
 } from "./surveyMeasureStorage";
 import { listLibrary } from "./itemLibrary";
+import { saveBoq, getBoq, createBoq, listBoqs, genShortId } from "./boqStorage";
 
 const designFlowKey = (siteID) => `designFlow_${siteID}`;
+const designFlowArchiveKey = (siteID) => `designFlowArchive_${siteID}`;
 
 const readJson = (key, fallback) => {
   try {
@@ -160,12 +163,22 @@ export const startDesign = (site, { areas, surveyState, basis } = {}) => {
         areas: (areas || []).map((a) => ({
           area: a.area,
           elements: (a.elements || []).map((el) => ({
+            scopeItemId: el.scopeItemId || null,
+            masterId: el.masterId || null,
             name: el.name,
             unit: el.unit,
             rate: Number(el.rate) || 0,
             quotedQty: Number(el.qty) || 0, // assumed quantity from the quote
+            // hasRate/amount carry through so buildBoq doesn't re-price a flat
+            // lump-sum room line by a measured sqft figure (see
+            // surveyMeasureStorage.areasForSite for why this distinction exists).
+            hasRate: !!el.hasRate,
+            amount: Number(el.amount) || 0,
+            materials: el.materials || [],
+            isCustom: !!el.isCustom,
           })),
         })),
+        proposalBaseline: getProposalBaselineForSite(site),
         total: surveyState?.total ?? 0,
         measured: surveyState?.measured ?? 0,
         totalSqft: surveyState?.totalSqft ?? 0,
@@ -221,6 +234,35 @@ export const startDesign = (site, { areas, surveyState, basis } = {}) => {
   saveSite({ siteID: site.siteID, status: "Design" });
   window.dispatchEvent(new Event("designFlowChanged"));
   return flow;
+};
+
+export const unfreezeSurvey = (siteID) => {
+  const flow = getDesignFlow(siteID);
+  if (!flow) return null;
+
+  // Unlocking is destructive to the active pipeline, so retain a versioned
+  // snapshot for audit/history before opening the survey for re-measurement.
+  const archive = readJson(designFlowArchiveKey(siteID), []);
+  writeJson(designFlowArchiveKey(siteID), [
+    { ...flow, archivedAt: stamp(), archiveReason: "Survey unlocked" },
+    ...archive,
+  ]);
+  const boqId = flow.boqId || getStage(flow, "BOQ")?.boq?.editorBoqId;
+  const linkedBoq = boqId ? getBoq(boqId) : null;
+  if (linkedBoq) {
+    saveBoq({
+      ...linkedBoq,
+      status: "draft",
+      surveyStale: true,
+      surveyStaleAt: new Date().toISOString(),
+    });
+  }
+  saveSite({ siteID, status: "Survey", progress: 25 });
+  localStorage.removeItem(designFlowKey(siteID));
+
+  window.dispatchEvent(new Event("designFlowChanged"));
+  window.dispatchEvent(new Event("siteDataChanged"));
+  return null;
 };
 
 // ── Stage actions — the submit → approve → revise loop ───────────────────────
@@ -334,7 +376,7 @@ export const requestRevision = (siteID, stageKey, { by = "Client", comment = "" 
 // name so the bill still populates when the proposal carried no per-unit rate.
 
 const GST_PERCENT = 18;
-const TOLERANCE_PCT = 10; // ± band: within = no re-negotiation; beyond = variation
+const TOLERANCE_AMOUNT = 15000;
 
 const masterRateFor = (name) => {
   const n = (name || "").trim().toLowerCase();
@@ -346,30 +388,64 @@ const masterRateFor = (name) => {
   return hit ? Number(hit.rate) || 0 : 0;
 };
 
-// Pure: compute the bill from the frozen Site Basis as Quoted vs Measured. The
-// rate is the fixed anchor — Quoted uses the assumed qty, Measured uses the
-// surveyed qty, both at the SAME rate, so the two only diverge by measurement.
+// Pure: compute the bill from the frozen Site Basis as Quoted vs Measured.
+// Quoted preserves each Proposal Master line's stored amount; Measured applies
+// the surveyed quantity and active material rate. Site-added custom works have
+// no original quoted amount and therefore contribute only to Measured.
 export const buildBoq = (flow) => {
   const basis = flow?.siteBasis;
   if (!basis) return null;
   const measurements = basis.measurements || {};
   const areas = (basis.areas || []).map((a) => {
     const rows = a.elements.map((el) => {
-      const d = measurements[elKey(a.area, el.name)] || {};
-      const rate = Number(el.rate) || masterRateFor(el.name);
+      const d = getElementMeasurement(measurements, a.area, el);
       const quotedQty = Number(el.quotedQty) || 0;
       const measuredQty = qtyFor(el.unit, d);
-      const quotedAmount = quotedQty * rate;
-      const measuredAmount = measuredQty * rate;
+      // A flat lump-sum room line (no real per-unit rate) has nothing to
+      // re-price by a measured sqft figure — carry its quoted amount through
+      // unchanged instead of multiplying sqft × a rupee total.
+      const hasRate = el.hasRate || (!el.amount && Number(el.rate) > 0);
+      const quotedRate = hasRate ? Number(el.rate) || masterRateFor(el.name) : 0;
+      const selectedMaterial = d.selectedMaterial?.grade
+        ? d.selectedMaterial
+        : null;
+      const rate = hasRate
+        ? Number(selectedMaterial?.rate) || quotedRate
+        : 0;
+      const proposalAmount = Number(el.amount) || 0;
+      const quotedAmount = el.isCustom
+        ? 0
+        : proposalAmount || (hasRate ? quotedQty * quotedRate : 0);
+      const measuredAmount = hasRate ? measuredQty * rate : Number(el.amount) || 0;
       return {
+        scopeItemId: el.scopeItemId || null,
+        masterId: el.masterId || null,
         name: el.name,
         unit: el.unit,
         rate,
+        quotedRate,
         quotedQty,
         measuredQty,
         quotedAmount,
         measuredAmount,
         variance: measuredAmount - quotedAmount,
+        selectedMaterial,
+        materials: selectedMaterial
+          ? (selectedMaterial.materials || []).length
+            ? selectedMaterial.materials.map((material) => ({
+                id: material.materialId || material.id,
+                name: material.name || "Material",
+                spec: material.spec || "",
+              }))
+            : [{
+                id: selectedMaterial.id,
+                name: selectedMaterial.name,
+                spec: selectedMaterial.specifications || selectedMaterial.spec || "",
+                rate: Number(selectedMaterial.rate) || 0,
+                unit: selectedMaterial.unit || el.unit,
+              }]
+          : el.materials || [],
+        isCustom: !!el.isCustom,
       };
     });
     return {
@@ -380,25 +456,35 @@ export const buildBoq = (flow) => {
     };
   });
 
-  const quotedSubtotal = areas.reduce((s, a) => s + a.quotedSubtotal, 0);
+  const quotedSubtotal =
+    Number(basis.proposalBaseline?.subtotal) ||
+    areas.reduce((s, a) => s + a.quotedSubtotal, 0);
   const measuredSubtotal = areas.reduce((s, a) => s + a.measuredSubtotal, 0);
-  const variance = measuredSubtotal - quotedSubtotal;
-  const variancePct = quotedSubtotal ? (variance / quotedSubtotal) * 100 : 0;
   const gst = (measuredSubtotal * GST_PERCENT) / 100;
+  const quotedGst =
+    Number(basis.proposalBaseline?.gst) ||
+    (quotedSubtotal * GST_PERCENT) / 100;
+  const quotedTotal =
+    Number(basis.proposalBaseline?.grandTotal) || quotedSubtotal + quotedGst;
+  const measuredTotal = measuredSubtotal + gst;
+  // The survey gate and BOQ use the same GST-inclusive commercial values.
+  const variance = measuredTotal - quotedTotal;
+  const variancePct = quotedTotal ? (variance / quotedTotal) * 100 : 0;
 
   return {
     areas,
     gstPercent: GST_PERCENT,
     quotedSubtotal,
     measuredSubtotal,
-    quotedTotal: quotedSubtotal * (1 + GST_PERCENT / 100),
+    quotedGst,
+    quotedTotal,
     gst,
     // `total` = the final (measured) amount the client pays.
-    total: measuredSubtotal + gst,
+    total: measuredTotal,
     variance,
     variancePct,
-    tolerancePct: TOLERANCE_PCT,
-    withinTolerance: Math.abs(variancePct) <= TOLERANCE_PCT,
+    toleranceAmount: TOLERANCE_AMOUNT,
+    withinTolerance: variance <= TOLERANCE_AMOUNT,
     hasQuote: quotedSubtotal > 0,
   };
 };
@@ -419,6 +505,147 @@ export const generateStageBoq = (siteID) => {
     at: stamp(),
     action: `BOQ auto-generated from survey (₹${totalLabel})`,
   });
+
+  // Sync with main BOQ system
+  try {
+    const site = getSite(siteID);
+    const clientID = site?.clientID || "";
+    const clientName = site?.clientName || "";
+    const boqId = `BOQ-${siteID}`;
+    const existingBoqSummary = listBoqs().find((b) => b.id === boqId);
+    let targetBoq = existingBoqSummary ? getBoq(existingBoqSummary.id) : null;
+
+    if (!targetBoq) {
+      targetBoq = createBoq({
+        title: `BOQ for ${clientName}`,
+        parentType: "client",
+        parentId: clientID,
+        client: { name: clientName },
+        project: { siteID },
+      });
+      targetBoq.id = boqId;
+    }
+
+    // A regenerated survey bill always returns to commercial review. Preserve
+    // the record ID, but never leave revised quantities marked as approved.
+    if (targetBoq.status && targetBoq.status !== "draft") {
+      targetBoq.revision = (Number(targetBoq.revision) || 1) + 1;
+    }
+    targetBoq.status = "draft";
+
+    targetBoq.siteID = siteID;
+    targetBoq.proposalBaseline = { ...(flow.siteBasis?.proposalBaseline || {}) };
+    targetBoq.quotedSubtotal = boq.quotedSubtotal;
+    targetBoq.quotedTotal = boq.quotedTotal;
+    targetBoq.measuredSubtotal = boq.measuredSubtotal;
+    targetBoq.measuredTotal = boq.total;
+    targetBoq.surveyVariance = boq.variance;
+    targetBoq.surveyToleranceAmount = boq.toleranceAmount;
+    targetBoq.surveyWithinTolerance = boq.withinTolerance;
+    targetBoq.surveyFrozenAt = flow.siteBasis?.frozenAt || null;
+
+    const generatedSectionNames = new Set(boq.areas.map((area) => area.area));
+    const generatedSections = boq.areas.map((area) => {
+      const existingSection = targetBoq.sections?.find((s) => s.name === area.area);
+      const matchedItemIds = new Set();
+      const generatedItems = area.rows.map((row) => {
+        const existingItem = existingSection?.items?.find(
+          (it) =>
+            (row.scopeItemId && it.scopeItemId === row.scopeItemId) ||
+            it.description === row.name,
+        );
+        if (existingItem) matchedItemIds.add(existingItem.id);
+        const d = getElementMeasurement(
+          flow.siteBasis?.measurements,
+          area.area,
+          row,
+        );
+        const hasDimensions = [d.length, d.breadth ?? d.width, d.height].some(
+          (value) => Number(value) > 0,
+        );
+        const canReproduceSurveyQty =
+          row.unit === "sqft" ||
+          row.unit === "sqm" ||
+          ((row.unit === "rmt" || row.unit === "mm") &&
+            !Number(d.breadth ?? d.width) &&
+            !Number(d.height));
+        return {
+          ...existingItem,
+          id: existingItem?.id || genShortId(),
+          scopeItemId: row.scopeItemId,
+          masterId: row.masterId || existingItem?.masterId || null,
+          description: row.name,
+          spec:
+            row.selectedMaterial?.specifications ||
+            row.selectedMaterial?.spec ||
+            existingItem?.spec ||
+            "",
+          hsn: row.selectedMaterial?.hsn || existingItem?.hsn || "",
+          qty: row.measuredQty,
+          unit: row.unit,
+          rate: row.rate,
+          gstPercent:
+            row.selectedMaterial?.gstPercent ?? existingItem?.gstPercent ?? 18,
+          discount: existingItem?.discount || { type: "percent", value: 0 },
+          dimensions: {
+            enabled: hasDimensions && canReproduceSurveyQty,
+            length: Number(d.length) || 0,
+            breadth: Number(d.breadth ?? d.width) || 0,
+            height: Number(d.height) || 0,
+            nos: Number(d.nos) || 1,
+          },
+          materials: row.materials || [],
+          quotedQty: row.quotedQty,
+          quotedRate: row.quotedRate,
+          quotedAmount: row.quotedAmount,
+          measuredQty: row.measuredQty,
+          measuredRate: row.rate,
+          measuredAmount: row.measuredAmount,
+          surveyVariance: row.variance,
+          source: row.isCustom ? "site-custom" : "survey",
+          siteSurveySource: true,
+          siteMeasuredQty: row.measuredQty,
+          siteID,
+          isSiteCustomItem: !!row.isCustom,
+          isVariation: !!row.isCustom,
+        };
+      });
+      return {
+        id: existingSection?.id || genShortId(),
+        name: area.area,
+        category: area.area,
+        scopeItemId:
+          area.rows.find((row) => row.scopeItemId)?.scopeItemId ||
+          existingSection?.scopeItemId ||
+          null,
+        items: [
+          ...generatedItems,
+          ...(existingSection?.items || []).filter(
+            (item) => !matchedItemIds.has(item.id) && !item.siteSurveySource,
+          ),
+        ],
+      };
+    });
+
+    targetBoq.sections = [
+      ...generatedSections,
+      ...(targetBoq.sections || []).filter(
+        (section) => !generatedSectionNames.has(section.name),
+      ),
+    ];
+
+    const savedBoq = saveBoq(targetBoq);
+    savedBoq.surveyStale = false;
+    savedBoq.surveyStaleAt = null;
+    saveBoq(savedBoq);
+    stage.boq.editorBoqId = savedBoq.id;
+    flow.boqId = savedBoq.id;
+  } catch (err) {
+    console.error("Failed to sync survey BOQ to main BOQ database:", err);
+    stage.boq.syncError =
+      "BOQ was calculated, but it could not be saved to the main BOQ editor.";
+  }
+
   return writeFlow(siteID, flow);
 };
 

@@ -266,6 +266,7 @@ const ProposalMaster = () => {
   // BOQ reuses the SAME rate and only varies by measured quantity. Legacy
   // lump-sum rows (no rate) fall back to their amount as the rate.
   const scopeRowToForm = (item) => ({
+    id: item.id,
     heading: item.heading || item.area || "",
     itemName: item.itemName || item.description || "",
     description: item.area || "",
@@ -462,12 +463,18 @@ const ProposalMaster = () => {
       showToast(`Added ${newRows.length} scope item(s)`, "success");
     } else {
       const form = formOrArray;
+      const existingScope =
+        editingScopeIdx != null
+          ? activeConfig?.scopeItems?.[editingScopeIdx]
+          : null;
       const computed = computeLibraryItemAmount(form);
       const amount = computed || Number(form.rate) || 0;
       const materials = form.materials
         ? form.materials.map((m) => ({ ...m }))
         : [];
-      const heading = form.heading || form.description || "";
+      const heading = existingScope
+        ? existingScope.heading || existingScope.area || ""
+        : form.heading || form.description || "";
       const itemName = form.itemName || form.description || "";
       const description = form.spec || form.description || "";
       const area = heading;
@@ -1834,6 +1841,7 @@ const ProposalMaster = () => {
           showTags={false}
           multiEntryMode={editingScopeIdx == null}
           existingScopeItems={activeConfig?.scopeItems || []}
+          lockHeading={editingScopeIdx != null}
         />
       )}
 

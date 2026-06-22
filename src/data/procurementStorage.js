@@ -143,3 +143,7 @@ export const listAllPurchaseOrders = () =>
       contractId: c.id,
     })),
   );
+
+// Single PO lookup by id, tagged with its project/client — backs the PO detail page.
+export const getPurchaseOrderById = (id) =>
+  listAllPurchaseOrders().find((po) => po.id === id) || null;
